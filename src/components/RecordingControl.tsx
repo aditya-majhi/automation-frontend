@@ -1,0 +1,214 @@
+import { useState } from "react";
+import FormInput from "./FormInput";
+
+interface RecordingControlsProps {
+  testCaseId: string;
+  isRecording: boolean;
+  stepCount: number;
+  isExtensionInstalled: boolean;
+  onStart: (url: string) => Promise<void>;
+  onStop: () => Promise<void>;
+}
+
+const RecordingControls = ({
+  testCaseId,
+  isRecording,
+  stepCount,
+  isExtensionInstalled,
+  onStart,
+  onStop,
+}: RecordingControlsProps) => {
+  const [url, setUrl] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  const handleStart = async () => {
+    if (!url.trim()) {
+      setError("Please enter a target URL");
+      return;
+    }
+
+    const formattedUrl =
+      url.startsWith("http://") || url.startsWith("https://")
+        ? url
+        : `https://${url}`;
+
+    setError("");
+    setLoading(true);
+    try {
+      await onStart(formattedUrl);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to start recording",
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleStop = async () => {
+    setLoading(true);
+    try {
+      await onStop();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to stop recording");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={styles.wrapper}>
+      <div style={styles.header}>
+        <span style={styles.title}>🎥 Record Test Case</span>
+        {isRecording && (
+          <div style={styles.liveIndicator}>
+            <span style={styles.dot} />
+            Recording — {stepCount} steps
+          </div>
+        )}
+      </div>
+
+      <div style={styles.idBox}>
+        <span style={styles.idLabel}>Test Case ID:</span>
+        <code style={styles.idValue}>{testCaseId}</code>
+      </div>
+
+      {error && <div style={styles.error}>{error}</div>}
+
+      {!isRecording ? (
+        <div style={styles.row}>
+          <div style={styles.inputWrap}>
+            <FormInput
+              label="Target URL"
+              value={url}
+              onChange={setUrl}
+              placeholder="https://example.com/login"
+            />
+          </div>
+          <button
+            style={{
+              ...styles.startBtn,
+              opacity: !isExtensionInstalled || loading ? 0.5 : 1,
+              cursor:
+                !isExtensionInstalled || loading ? "not-allowed" : "pointer",
+            }}
+            onClick={handleStart}
+            disabled={!isExtensionInstalled || loading}
+          >
+            {loading ? "Starting..." : "▶ Start Recording"}
+          </button>
+        </div>
+      ) : (
+        <button
+          style={{
+            ...styles.stopBtn,
+            opacity: loading ? 0.5 : 1,
+          }}
+          onClick={handleStop}
+          disabled={loading}
+        >
+          {loading ? "Stopping..." : "⏹ Stop Recording"}
+        </button>
+      )}
+    </div>
+  );
+};
+
+const styles: Record<string, React.CSSProperties> = {
+  wrapper: {
+    backgroundColor: "#313244",
+    borderRadius: "12px",
+    padding: "20px",
+    border: "1px solid #45475a",
+    marginBottom: "24px",
+  },
+  header: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: "14px",
+  },
+  title: {
+    fontSize: "15px",
+    fontWeight: "600",
+    color: "#cdd6f4",
+  },
+  liveIndicator: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+    fontSize: "13px",
+    color: "#a6e3a1",
+    fontWeight: "600",
+  },
+  dot: {
+    width: "10px",
+    height: "10px",
+    borderRadius: "50%",
+    backgroundColor: "#a6e3a1",
+    boxShadow: "0 0 6px #a6e3a1",
+    animation: "pulse 1.2s infinite",
+    display: "inline-block",
+  },
+  idBox: {
+    backgroundColor: "#1e1e2e",
+    borderRadius: "8px",
+    padding: "8px 12px",
+    marginBottom: "16px",
+    display: "flex",
+    alignItems: "center",
+    gap: "10px",
+  },
+  idLabel: {
+    fontSize: "12px",
+    color: "#6c7086",
+  },
+  idValue: {
+    fontSize: "12px",
+    color: "#89dceb",
+    wordBreak: "break-all",
+  },
+  error: {
+    backgroundColor: "#f38ba820",
+    border: "1px solid #f38ba8",
+    color: "#f38ba8",
+    padding: "10px 14px",
+    borderRadius: "8px",
+    fontSize: "13px",
+    marginBottom: "14px",
+  },
+  row: {
+    display: "flex",
+    gap: "12px",
+    alignItems: "flex-end",
+  },
+  inputWrap: {
+    flex: 1,
+  },
+  startBtn: {
+    padding: "10px 20px",
+    backgroundColor: "#a6e3a1",
+    color: "#1e1e2e",
+    border: "none",
+    borderRadius: "8px",
+    fontWeight: "bold",
+    fontSize: "13px",
+    cursor: "pointer",
+    whiteSpace: "nowrap",
+    marginBottom: "14px",
+  },
+  stopBtn: {
+    padding: "10px 24px",
+    backgroundColor: "#f38ba8",
+    color: "#1e1e2e",
+    border: "none",
+    borderRadius: "8px",
+    fontWeight: "bold",
+    fontSize: "14px",
+    cursor: "pointer",
+    width: "100%",
+  },
+};
+
+export default RecordingControls;

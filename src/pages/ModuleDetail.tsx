@@ -1,0 +1,157 @@
+import { useState, useEffect } from "react";
+import { useParams, useNavigate } from "react-router-dom";
+import { testCaseService } from "../api/services";
+import Card from "../components/Card";
+import Modal from "../components/Modal";
+import FormInput from "../components/FormInput";
+
+interface TestCase {
+  id: string;
+  name: string;
+  description?: string;
+  createdAt: string;
+}
+
+const ModuleDetailPage = () => {
+  const { moduleId } = useParams<{ moduleId: string }>();
+  const navigate = useNavigate();
+  const [testCases, setTestCases] = useState<TestCase[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showModal, setShowModal] = useState(false);
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [error, setError] = useState("");
+
+  const fetchTestCases = async () => {
+    if (!moduleId) return;
+    try {
+      const data = await testCaseService.getByModule(moduleId);
+      setTestCases(data);
+    } catch {
+      setError("Failed to fetch test cases");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchTestCases();
+  }, [moduleId]);
+
+  const handleCreate = async () => {
+    if (!name.trim() || !moduleId) return;
+    try {
+      await testCaseService.create(name, moduleId, description);
+      setName("");
+      setDescription("");
+      setShowModal(false);
+      fetchTestCases();
+    } catch {
+      setError("Failed to create test case");
+    }
+  };
+
+  return (
+    <div style={styles.page}>
+      <button style={styles.back} onClick={() => navigate(-1)}>
+        ← Back to Modules
+      </button>
+      <div style={styles.header}>
+        <h2 style={styles.title}>🧪 Test Cases</h2>
+        <button style={styles.addBtn} onClick={() => setShowModal(true)}>
+          + New Test Case
+        </button>
+      </div>
+
+      {error && <div style={styles.error}>{error}</div>}
+
+      {loading ? (
+        <p style={styles.empty}>Loading...</p>
+      ) : testCases.length === 0 ? (
+        <p style={styles.empty}>No test cases yet.</p>
+      ) : (
+        testCases.map((tc) => (
+          <Card
+            key={tc.id}
+            title={tc.name}
+            subtitle={
+              tc.description || new Date(tc.createdAt).toLocaleDateString()
+            }
+            onClick={() => navigate(`/testcases/${tc.id}`)}
+          />
+        ))
+      )}
+
+      {showModal && (
+        <Modal title="New Test Case" onClose={() => setShowModal(false)}>
+          <FormInput
+            label="Test Case Name"
+            value={name}
+            onChange={setName}
+            placeholder="Login with valid credentials"
+          />
+          <FormInput
+            label="Description (optional)"
+            value={description}
+            onChange={setDescription}
+            placeholder="What does this test verify?"
+          />
+          <button style={styles.addBtn} onClick={handleCreate}>
+            Create Test Case
+          </button>
+        </Modal>
+      )}
+    </div>
+  );
+};
+
+const styles: Record<string, React.CSSProperties> = {
+  page: {
+    padding: "28px",
+    backgroundColor: "#181825",
+    minHeight: "calc(100vh - 52px)",
+    color: "#cdd6f4",
+  },
+  back: {
+    background: "transparent",
+    border: "none",
+    color: "#89b4fa",
+    cursor: "pointer",
+    fontSize: "13px",
+    marginBottom: "16px",
+    padding: 0,
+  },
+  header: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: "24px",
+  },
+  title: {
+    margin: 0,
+    fontSize: "20px",
+    color: "#cba6f7",
+  },
+  addBtn: {
+    padding: "9px 18px",
+    backgroundColor: "#a6e3a1",
+    color: "#1e1e2e",
+    border: "none",
+    borderRadius: "8px",
+    fontWeight: "bold",
+    cursor: "pointer",
+    fontSize: "13px",
+  },
+  error: {
+    backgroundColor: "#f38ba820",
+    border: "1px solid #f38ba8",
+    color: "#f38ba8",
+    padding: "10px 14px",
+    borderRadius: "8px",
+    fontSize: "13px",
+    marginBottom: "14px",
+  },
+  empty: { color: "#6c7086", fontSize: "14px" },
+};
+
+export default ModuleDetailPage;
