@@ -10,6 +10,8 @@ interface Recording {
   id: string;
   steps: any[];
   variables?: any[];
+  structuredSteps?: any[];
+  structuredVars?: any[];
   videoUrl?: string;
   createdAt: string;
 }
@@ -66,6 +68,21 @@ const TestCaseDetailPage = () => {
     fetchRecordings();
   };
 
+  // Merge structured data from backend with raw JSON data
+  // Prefer structuredSteps/structuredVars if available
+  const getRecordingForDisplay = (r: Recording) => {
+    const steps = r.structuredSteps?.length ? r.structuredSteps : r.steps || [];
+    const variables = r.structuredVars?.length
+      ? r.structuredVars
+      : r.variables || [];
+
+    return {
+      steps,
+      variables,
+      videoUrl: r.videoUrl,
+    };
+  };
+
   return (
     <div style={styles.page}>
       <button style={styles.back} onClick={() => navigate(-1)}>
@@ -76,7 +93,6 @@ const TestCaseDetailPage = () => {
         <h2 style={styles.title}>🎥 Recordings</h2>
       </div>
 
-      {/* Extension Status Banner */}
       {extensionStatus === "checking" && (
         <div style={styles.checking}>🔍 Checking for extension...</div>
       )}
@@ -84,7 +100,6 @@ const TestCaseDetailPage = () => {
         <ExtensionBanner onRetry={checkExtension} />
       )}
 
-      {/* Recording Controls */}
       {testCaseId && (
         <RecordingControls
           testCaseId={testCaseId}
@@ -96,12 +111,9 @@ const TestCaseDetailPage = () => {
         />
       )}
 
-      {/* Success message */}
       {recordingSuccess && <div style={styles.success}>{recordingSuccess}</div>}
-
       {error && <div style={styles.error}>{error}</div>}
 
-      {/* Recordings List */}
       <h3 style={styles.sectionTitle}>Past Recordings</h3>
 
       {loading ? (
@@ -125,8 +137,11 @@ const TestCaseDetailPage = () => {
                   🎬 {new Date(r.createdAt).toLocaleString()}
                 </div>
                 <div style={styles.cardSub}>
-                  {r.steps.length} steps
-                  {r.videoUrl ? " · 📹 Video available" : ""}
+                  {(r.structuredSteps || r.steps || []).length} steps
+                  {(r.structuredVars || r.variables || []).length > 0
+                    ? ` · ${(r.structuredVars || r.variables || []).length} variables`
+                    : ""}
+                  {r.videoUrl ? " · 📹 Video" : ""}
                 </div>
               </div>
               <span style={styles.toggle}>
@@ -136,8 +151,7 @@ const TestCaseDetailPage = () => {
 
             {expandedId === r.id && (
               <div style={styles.cardBody}>
-                {/* REPLACED old inline video + JSON steps rendering */}
-                <RecordingDetailsTabs recording={r} />
+                <RecordingDetailsTabs recording={getRecordingForDisplay(r)} />
               </div>
             )}
           </div>
@@ -147,6 +161,7 @@ const TestCaseDetailPage = () => {
   );
 };
 
+// ...existing code...
 const styles: Record<string, React.CSSProperties> = {
   page: {
     padding: "28px",
@@ -249,38 +264,6 @@ const styles: Record<string, React.CSSProperties> = {
   cardBody: {
     padding: "0 16px 16px",
     borderTop: "1px solid #45475a",
-  },
-  videoWrapper: {
-    marginTop: "16px",
-    marginBottom: "12px",
-  },
-  video: {
-    width: "100%",
-    borderRadius: "8px",
-    backgroundColor: "#000",
-  },
-  stepsTitle: {
-    fontSize: "13px",
-    color: "#a6adc8",
-    marginBottom: "8px",
-  },
-  stepsBox: {
-    maxHeight: "320px",
-    overflowY: "auto",
-    display: "flex",
-    flexDirection: "column",
-    gap: "6px",
-  },
-  step: {
-    backgroundColor: "#1e1e2e",
-    border: "1px solid #45475a",
-    borderRadius: "6px",
-    padding: "10px",
-    fontSize: "11px",
-    color: "#a6e3a1",
-    margin: 0,
-    whiteSpace: "pre-wrap",
-    wordBreak: "break-word",
   },
 };
 
