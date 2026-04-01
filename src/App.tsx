@@ -1,5 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
-import { AuthProvider } from "./context/AuthContext";
+import { AuthProvider, useAuth } from "./context/AuthContext";
 import ProtectedRoute from "./router/ProtectedRoute";
 import Navbar from "./components/Navbar";
 import LoginPage from "./pages/Login";
@@ -8,6 +8,19 @@ import ProjectsPage from "./pages/Projects";
 import ProjectDetailPage from "./pages/ProjectDetail";
 import ModuleDetailPage from "./pages/ModuleDetail";
 import TestCaseDetailPage from "./pages/TestCaseDetail";
+import AdminLayout from "./components/AdminLayout";
+import UsersPage from "./pages/UserManagement";
+import RolesPage from "./pages/RoleManagement";
+import ProjectMappingPage from "./pages/ProjectMapping";
+
+const AdminRoute = ({ children }: { children: React.ReactNode }) => {
+  const { token, isAdmin, loading } = useAuth();
+  if (loading)
+    return <div style={{ minHeight: "100vh", backgroundColor: "#181825" }} />;
+  if (!token) return <Navigate to="/login" replace />;
+  if (!isAdmin) return <Navigate to="/" replace />;
+  return <>{children}</>;
+};
 
 const App = () => {
   return (
@@ -49,6 +62,21 @@ const App = () => {
               </ProtectedRoute>
             }
           />
+
+          <Route
+            path="/admin"
+            element={
+              <AdminRoute>
+                <AdminLayout />
+              </AdminRoute>
+            }
+          >
+            <Route index element={<Navigate to="users" replace />} />
+            <Route path="users" element={<UsersPage />} />
+            <Route path="roles" element={<RolesPage />} />
+            <Route path="project-mapping" element={<ProjectMappingPage />} />
+          </Route>
+
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>

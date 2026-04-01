@@ -71,10 +71,10 @@ const TestCaseDetailPage = () => {
   // Merge structured data from backend with raw JSON data
   // Prefer structuredSteps/structuredVars if available
   const getRecordingForDisplay = (r: Recording) => {
-    const steps = r.structuredSteps?.length ? r.structuredSteps : r.steps || [];
-    const variables = r.structuredVars?.length
-      ? r.structuredVars
-      : r.variables || [];
+    const steps = r.steps?.length ? r.steps : r.structuredSteps || [];
+    const variables = r.variables?.length
+      ? r.variables
+      : r.structuredVars || [];
 
     return {
       steps,
@@ -161,7 +161,6 @@ const TestCaseDetailPage = () => {
   );
 };
 
-// ...existing code...
 const styles: Record<string, React.CSSProperties> = {
   page: {
     padding: "28px",

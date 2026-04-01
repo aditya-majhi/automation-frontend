@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { projectService } from "../api/services";
+import { useAuth } from "../context/AuthContext";
 import Card from "../components/Card";
 import Modal from "../components/Modal";
 import FormInput from "../components/FormInput";
@@ -13,6 +14,7 @@ interface Project {
 }
 
 const ProjectsPage = () => {
+  const { isAdmin } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
@@ -23,6 +25,8 @@ const ProjectsPage = () => {
 
   const fetchProjects = async () => {
     try {
+      setLoading(true);
+      setError("");
       const data = await projectService.getAll();
       setProjects(data);
     } catch {
@@ -38,57 +42,71 @@ const ProjectsPage = () => {
 
   const handleCreate = async () => {
     if (!name.trim()) return;
+
     try {
+      setError("");
       await projectService.create(name, description);
       setName("");
       setDescription("");
       setShowModal(false);
-      fetchProjects();
+      await fetchProjects();
     } catch {
       setError("Failed to create project");
     }
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm("Delete this project?")) return;
+    if (!isAdmin) return;
+    if (!window.confirm("Delete this project?")) return;
+
     try {
+      setError("");
       await projectService.delete(id);
-      fetchProjects();
+      await fetchProjects();
     } catch {
       setError("Failed to delete project");
     }
   };
 
+  const emptyMessage = isAdmin
+    ? "No projects yet. Create one to get started."
+    : "You don't have any Projects. Ask the Admin to assign projects.";
+
   return (
     <div style={styles.page}>
       <div style={styles.header}>
         <h2 style={styles.title}>📁 Projects</h2>
-        <button style={styles.addBtn} onClick={() => setShowModal(true)}>
-          + New Project
-        </button>
+        {isAdmin && (
+          <button style={styles.addBtn} onClick={() => setShowModal(true)}>
+            + New Project
+          </button>
+        )}
       </div>
 
       {error && <div style={styles.error}>{error}</div>}
 
       {loading ? (
         <p style={styles.empty}>Loading...</p>
-      ) : projects?.length === 0 ? (
-        <p style={styles.empty}>No projects yet. Create one to get started.</p>
+      ) : projects.length === 0 ? (
+        <div style={styles.emptyState}>
+          <p style={styles.empty}>{emptyMessage}</p>
+        </div>
       ) : (
-        projects?.map((p) => (
+        projects.map((project) => (
           <Card
-            key={p.id}
-            title={p.name}
+            key={project.id}
+            title={project.name}
             subtitle={
-              p.description || new Date(p.createdAt).toLocaleDateString()
+              project.description ||
+              new Date(project.createdAt).toLocaleDateString()
             }
-            onDelete={() => handleDelete(p.id)}
-            onClick={() => navigate(`/projects/${p.id}`)}
+            onDelete={isAdmin ? () => handleDelete(project.id) : undefined}
+            onClick={() => navigate(`/projects/${project.id}`)}
           />
         ))
       )}
 
-      {showModal && (
+      {showModal && isAdmin && (
         <Modal title="New Project" onClose={() => setShowModal(false)}>
           <FormInput
             label="Project Name"
@@ -148,9 +166,16 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: "13px",
     marginBottom: "14px",
   },
+  emptyState: {
+    padding: "32px 20px",
+    border: "1px dashed #45475a",
+    borderRadius: "12px",
+    backgroundColor: "#1e1e2e",
+  },
   empty: {
     color: "#6c7086",
     fontSize: "14px",
+    margin: 0,
   },
 };
 

@@ -44,6 +44,7 @@ type Variable = {
   pageTitle?: string;
   pageName?: string;
   createdAt?: string | number;
+  capture?: { text?: string | null; value?: any } | null;
   [key: string]: any;
 };
 
@@ -57,11 +58,18 @@ interface RecordingDetailsTabsProps {
 
 type TabKey = "steps" | "variables" | "selenium" | "video";
 type LocatorPref = "relativeXPath" | "css" | "xpath";
+type ScriptLanguage = "python" | "javascript" | "java";
 
 const LOCATOR_OPTIONS: { key: LocatorPref; label: string }[] = [
   { key: "relativeXPath", label: "Relative XPath" },
   { key: "css", label: "CSS" },
   { key: "xpath", label: "XPath" },
+];
+
+const LANGUAGE_OPTIONS: { key: ScriptLanguage; label: string }[] = [
+  { key: "python", label: "Python (pytest)" },
+  { key: "javascript", label: "JavaScript" },
+  { key: "java", label: "Java" },
 ];
 
 const DATA_TYPE_LABELS: Record<string, string> = {
@@ -106,6 +114,7 @@ const CONTEXT_ICONS: Record<
 > = {
   formField: { icon: "📝", label: "Form Field", color: "#cba6f7" },
   table: { icon: "📊", label: "Table", color: "#f9e2af" },
+  button: { icon: "🔘", label: "Button", color: "#fab387" },
   modal: { icon: "🪟", label: "Modal", color: "#89b4fa" },
   sidebar: { icon: "📑", label: "Sidebar", color: "#94e2d5" },
   navbar: { icon: "🧭", label: "Navbar", color: "#74c7ec" },
@@ -131,6 +140,10 @@ function normalizeSelector(
   obj: any,
 ): { css?: string; xpath?: string; relativeXPath?: string } | undefined {
   if (obj?.selector && typeof obj.selector === "object") return obj.selector;
+  if (typeof obj?.selector === "string") {
+    const s = obj.selector.trim();
+    return s.startsWith("/") || s.startsWith("(") ? { xpath: s } : { css: s };
+  }
   if (obj?.selectorCss || obj?.selectorXpath || obj?.selectorRelativeXpath) {
     return {
       css: obj.selectorCss || undefined,
@@ -226,6 +239,15 @@ function getContextMeta(obj: any): any {
   return null;
 }
 
+// ── Capture resolution ────────────────────────────────────────────────────────
+
+function getCapture(v: Variable): { text?: string | null; value?: any } | null {
+  if (v.capture) return v.capture;
+  const meta = getContextMeta(v);
+  if (meta?.capture) return meta.capture;
+  return null;
+}
+
 // ── Main Component ────────────────────────────────────────────────────────────
 
 const RecordingDetailsTabs: React.FC<RecordingDetailsTabsProps> = ({
@@ -233,10 +255,12 @@ const RecordingDetailsTabs: React.FC<RecordingDetailsTabsProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<TabKey>("steps");
   const [locatorPref, setLocatorPref] = useState<LocatorPref>("relativeXPath");
+  const [scriptLang, setScriptLang] = useState<ScriptLanguage>("python");
   const steps = recording.steps || [];
   const variables = recording.variables || [];
   const inputVars = variables.filter((v) => v.kind === "input");
   const outputVars = variables.filter((v) => v.kind === "output");
+  const buttonVars = variables.filter((v) => v.kind === "button");
 
   return (
     <div>
@@ -281,6 +305,26 @@ const RecordingDetailsTabs: React.FC<RecordingDetailsTabsProps> = ({
               {opt.label}
             </button>
           ))}
+          {activeTab === "selenium" && (
+            <>
+              <span style={{ ...styles.locatorLabel, marginLeft: 16 }}>
+                Language:
+              </span>
+              {LANGUAGE_OPTIONS.map((opt) => (
+                <button
+                  key={opt.key}
+                  type="button"
+                  onClick={() => setScriptLang(opt.key)}
+                  style={{
+                    ...styles.locatorChip,
+                    ...(scriptLang === opt.key ? styles.langChipActive : {}),
+                  }}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </>
+          )}
         </div>
       )}
 
@@ -292,11 +336,16 @@ const RecordingDetailsTabs: React.FC<RecordingDetailsTabsProps> = ({
           <VariablesPanel
             inputVars={inputVars}
             outputVars={outputVars}
+            buttonVars={buttonVars}
             locatorPref={locatorPref}
           />
         )}
         {activeTab === "selenium" && (
-          <SeleniumScriptView steps={steps} locatorPref={locatorPref} />
+          <SeleniumScriptView
+            steps={steps}
+            locatorPref={locatorPref}
+            language={scriptLang}
+          />
         )}
         {activeTab === "video" && recording.videoUrl && (
           <video src={recording.videoUrl} controls style={styles.video} />
@@ -360,8 +409,9 @@ const StepsTable: React.FC<{ steps: Step[]; locatorPref: LocatorPref }> = ({
             const selector = normalizeSelector(step);
             const locator = getPreferredLocator(selector, locatorPref);
             const elementLabel = buildElementLabel(step.targetTag, selector);
-            const value = step.value ?? null;
-            const selenium = generateSeleniumFromStep(step, locatorPref);
+            const value =
+              step.value ?? step.variableValue ?? step.buttonValue ?? null;
+            const selenium = generateJavaStep(step, locatorPref);
             const pageName = resolvePageName(step);
             const contextType = resolveContext(step);
             const ctxInfo =
@@ -472,12 +522,21 @@ const LocatorDetails: React.FC<{
 const VariablesPanel: React.FC<{
   inputVars: Variable[];
   outputVars: Variable[];
+  buttonVars: Variable[];
   locatorPref: LocatorPref;
-}> = ({ inputVars, outputVars, locatorPref }) => {
-  const [varTab, setVarTab] = useState<"all" | "input" | "output">("all");
-  const allVars = [...inputVars, ...outputVars];
+}> = ({ inputVars, outputVars, buttonVars, locatorPref }) => {
+  const [varTab, setVarTab] = useState<"all" | "input" | "output" | "button">(
+    "all",
+  );
+  const allVars = [...inputVars, ...outputVars, ...buttonVars];
   const displayVars =
-    varTab === "input" ? inputVars : varTab === "output" ? outputVars : allVars;
+    varTab === "input"
+      ? inputVars
+      : varTab === "output"
+        ? outputVars
+        : varTab === "button"
+          ? buttonVars
+          : allVars;
 
   if (!allVars.length)
     return <div style={styles.empty}>No variables recorded yet.</div>;
@@ -485,13 +544,15 @@ const VariablesPanel: React.FC<{
   return (
     <div>
       <div style={styles.varSubTabs}>
-        {(["all", "input", "output"] as const).map((t) => {
+        {(["all", "input", "output", "button"] as const).map((t) => {
           const count =
             t === "all"
               ? allVars.length
               : t === "input"
                 ? inputVars.length
-                : outputVars.length;
+                : t === "output"
+                  ? outputVars.length
+                  : buttonVars.length;
           return (
             <button
               key={t}
@@ -502,7 +563,13 @@ const VariablesPanel: React.FC<{
                 ...(varTab === t ? styles.varSubTabActive : {}),
               }}
             >
-              {t === "all" ? "All" : t === "input" ? "📥 Input" : "📤 Output"}
+              {t === "all"
+                ? "All"
+                : t === "input"
+                  ? "📥 Input"
+                  : t === "output"
+                    ? "📤 Output"
+                    : "🔘 Button"}
               <span style={styles.badgeSmall}>{count}</span>
             </button>
           );
@@ -516,10 +583,10 @@ const VariablesPanel: React.FC<{
               <th style={styles.th}>Variable Name</th>
               <th style={styles.th}>Data Type</th>
               <th style={styles.th}>Context</th>
-              <th style={styles.th}>Value</th>
+              <th style={styles.th}>Value / Capture</th>
               <th style={styles.th}>Locator</th>
               <th style={styles.th}>Page</th>
-              <th style={styles.th}>Operators</th>
+              <th style={styles.th}>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -548,6 +615,7 @@ const VariableRow: React.FC<{
   const [showOps, setShowOps] = useState(false);
   const [operators, setOperators] = useState<string[]>([]);
   const [loadingOps, setLoadingOps] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   const kind = v.kind || "input";
   const name = v.name || `var_${index + 1}`;
@@ -563,6 +631,7 @@ const VariableRow: React.FC<{
   const locator = getPreferredLocator(selector, locatorPref);
   const value = v.value ?? "";
   const pageName = resolvePageName(v);
+  const capture = getCapture(v);
 
   const fetchOperators = async () => {
     if (operators.length) {
@@ -588,7 +657,13 @@ const VariableRow: React.FC<{
     }
   };
 
-  // Build context detail text
+  const copyVarRef = () => {
+    const ref = `\${${name}}`;
+    navigator.clipboard.writeText(ref);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
   let contextDetail: string | null = null;
   if (ctxMeta) {
     if (contextType === "table") {
@@ -613,11 +688,25 @@ const VariableRow: React.FC<{
         <span
           style={{
             ...styles.kindBadge,
-            backgroundColor: kind === "input" ? "#89b4fa20" : "#a6e3a120",
-            color: kind === "input" ? "#89b4fa" : "#a6e3a1",
+            backgroundColor:
+              kind === "input"
+                ? "#89b4fa20"
+                : kind === "output"
+                  ? "#a6e3a120"
+                  : "#f5c2e720",
+            color:
+              kind === "input"
+                ? "#89b4fa"
+                : kind === "output"
+                  ? "#a6e3a1"
+                  : "#f5c2e7",
           }}
         >
-          {kind === "input" ? "📥 Input" : "📤 Output"}
+          {kind === "input"
+            ? "📥 Input"
+            : kind === "output"
+              ? "📤 Output"
+              : "🔘 Button"}
         </span>
       </td>
       <td style={styles.tdCode}>{name}</td>
@@ -657,7 +746,31 @@ const VariableRow: React.FC<{
           )}
       </td>
       <td style={styles.td}>
-        {value != null ? String(value) : <span style={styles.muted}>-</span>}
+        {value != null && value !== "" ? (
+          <div>{String(value)}</div>
+        ) : (
+          <span style={styles.muted}>-</span>
+        )}
+        {capture && (capture.text || capture.value != null) && (
+          <div style={styles.captureBlock}>
+            {capture.text && (
+              <div style={styles.captureRow}>
+                <span style={styles.captureLabel}>text:</span>{" "}
+                <span style={styles.captureValue}>
+                  {capture.text.length > 60
+                    ? capture.text.slice(0, 60) + "…"
+                    : capture.text}
+                </span>
+              </div>
+            )}
+            {capture.value != null && (
+              <div style={styles.captureRow}>
+                <span style={styles.captureLabel}>value:</span>{" "}
+                <span style={styles.captureValue}>{String(capture.value)}</span>
+              </div>
+            )}
+          </div>
+        )}
       </td>
       <td style={styles.tdLocators}>
         {locator ? (
@@ -678,14 +791,24 @@ const VariableRow: React.FC<{
         </span>
       </td>
       <td style={styles.td}>
-        <button
-          type="button"
-          onClick={fetchOperators}
-          style={styles.opsButton}
-          disabled={loadingOps}
-        >
-          {loadingOps ? "…" : showOps ? "Hide" : "Show"}
-        </button>
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <button
+            type="button"
+            onClick={copyVarRef}
+            style={styles.opsButton}
+            title={`Copy \${${name}}`}
+          >
+            {copied ? "Copied!" : "Copy ${}"}
+          </button>
+          <button
+            type="button"
+            onClick={fetchOperators}
+            style={styles.opsButton}
+            disabled={loadingOps}
+          >
+            {loadingOps ? "…" : showOps ? "Hide Ops" : "Operators"}
+          </button>
+        </div>
         {showOps && operators.length > 0 && (
           <div style={styles.opsContainer}>
             {operators.map((op) => (
@@ -700,25 +823,23 @@ const VariableRow: React.FC<{
   );
 };
 
-// ── Selenium Script ───────────────────────────────────────────────────────────
+// ── Selenium Script View (Multi-Language) ─────────────────────────────────────
 
 const SeleniumScriptView: React.FC<{
   steps: Step[];
   locatorPref: LocatorPref;
-}> = ({ steps, locatorPref }) => {
-  const lines: string[] = [];
-  steps.forEach((step, index) => {
-    const line = generateSeleniumFromStep(step, locatorPref);
-    if (!line) return;
-    const action = (step.action || step.type || "step").toString();
-    lines.push(
-      `// ${index + 1}. ${action}${step.pageName ? ` [${step.pageName}]` : ""}`,
-    );
-    lines.push(line);
-    lines.push("");
-  });
+  language: ScriptLanguage;
+}> = ({ steps, locatorPref, language }) => {
+  let script = "";
+  if (language === "python") {
+    script = generateFullPythonScript(steps, locatorPref);
+  } else if (language === "javascript") {
+    script = generateFullJavaScriptScript(steps, locatorPref);
+  } else {
+    script = generateFullJavaScript(steps, locatorPref);
+  }
 
-  if (!lines.length)
+  if (!script.trim())
     return <div style={styles.empty}>No Selenium commands available.</div>;
 
   return (
@@ -726,37 +847,258 @@ const SeleniumScriptView: React.FC<{
       <button
         type="button"
         style={styles.copyBtn}
-        onClick={() => navigator.clipboard.writeText(lines.join("\n"))}
+        onClick={() => navigator.clipboard.writeText(script)}
       >
         📋 Copy
       </button>
-      <pre style={styles.codeBlock}>{lines.join("\n")}</pre>
+      <pre style={styles.codeBlock}>{script}</pre>
     </div>
   );
 };
 
-function generateSeleniumFromStep(
-  step: Step,
+// ── Python (pytest) Generator ─────────────────────────────────────────────────
+
+function sanitizePythonXPath(raw?: string): string | null {
+  if (!raw) return null;
+  let x = raw.trim();
+  if (x.startsWith("///*")) x = x.replace(/^\/\/\*/, "//*");
+  if (x.startsWith("///")) x = x.replace(/^\/\/\//, "//");
+  return x;
+}
+
+function pythonVarKey(step: Step, index: number): string {
+  const tag = (step.targetTag || "el").toLowerCase();
+  const page = (step.pageName || "page").replace(/[^a-zA-Z0-9]+/g, "_");
+  const val = String(step.buttonValue ?? step.value ?? "")
+    .replace(/[^a-zA-Z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  const base = val ? `${tag}_${val}` : `${tag}_${index + 1}`;
+  return `${base}_${page}`.slice(0, 60);
+}
+
+function getPythonXPath(step: Step): string | null {
+  const s = normalizeSelector(step);
+  return sanitizePythonXPath(s?.relativeXPath || s?.xpath || null);
+}
+
+function generateFullPythonScript(steps: Step[], _pref: LocatorPref): string {
+  if (!steps.length) return "";
+  const pageUrl = steps[0]?.pageUrl || "https://example.com";
+
+  const lines: string[] = [
+    "# Generated by Automation Recorder",
+    "import pytest",
+    "import time",
+    "import json",
+    "from selenium import webdriver",
+    "from selenium.webdriver.common.by import By",
+    "from selenium.webdriver.common.action_chains import ActionChains",
+    "from selenium.webdriver.support import expected_conditions as EC",
+    "from selenium.webdriver.support.wait import WebDriverWait",
+    "from selenium.webdriver.common.keys import Keys",
+    "from selenium.webdriver.common.desired_capabilities import DesiredCapabilities",
+    "from selenium.webdriver.support.ui import Select # Import Select for dropdowns",
+    "from selenium.webdriver.firefox.service import Service # For local Firefox",
+    "from webdriver_manager.firefox import GeckoDriverManager # For managing GeckoDriver",
+    "",
+    "class TestRecording():",
+    "  def setup_method(self, method):",
+    "    self.driver = webdriver.Remote(command_executor='http://localhost:4444/wd/hub', desired_capabilities=DesiredCapabilities.FIREFOX)",
+    "    self.vars = {}",
+    "  ",
+    "  def teardown_method(self, method):",
+    "    self.driver.quit()",
+    "  ",
+    "  def test_recording(self):",
+    `    self.driver.get("${escapePy(pageUrl)}")`,
+    "    self.driver.set_window_size(1366, 768)",
+  ];
+
+  let currentPage = pageUrl;
+  steps.forEach((step, index) => {
+    if (step.pageUrl && step.pageUrl !== currentPage) {
+      lines.push(`    self.driver.get("${escapePy(step.pageUrl)}")`);
+      currentPage = step.pageUrl;
+    }
+
+    const stepLines = generatePythonStep(step, index);
+    if (!stepLines?.length) return;
+
+    const action = (step.action || step.type || "step").toString();
+    const pageName = step.pageName ? ` [${step.pageName}]` : "";
+    lines.push(`    # Step ${index + 1}: ${action}${pageName}`);
+    stepLines.forEach((l) => lines.push(`    ${l}`));
+  });
+
+  return lines.join("\n");
+}
+
+function generatePythonStep(step: Step, index: number): string[] | null {
+  const xpath = getPythonXPath(step);
+  if (!xpath) return null;
+
+  const by = `By.XPATH, "${escapePy(xpath)}"`;
+  const action = (step.action || step.type || "").toString().toLowerCase();
+  const v = step.value != null ? String(step.value) : "";
+  const buttonValue = step.buttonValue != null ? String(step.buttonValue) : "";
+  const varName = pythonVarKey(step, index);
+
+  if (action === "click" || action === "select" || action === "check") {
+    const captureExpr =
+      buttonValue || step.targetTag === "button"
+        ? `.text`
+        : `.get_attribute("value")`;
+    return [
+      `self.vars["${escapePy(varName)}"] = self.driver.find_element(${by})${captureExpr}`,
+      `self.driver.find_element(${by}).click()`,
+    ];
+  }
+
+  if (action === "input") {
+    return [
+      `self.driver.find_element(${by}).click()`,
+      `self.driver.find_element(${by}).send_keys("${escapePy(v)}")`,
+      `self.vars["${escapePy(varName)}"] = self.driver.find_element(${by}).get_attribute("value")`,
+    ];
+  }
+
+  if (action === "submit") {
+    return [
+      `self.vars["${escapePy(varName)}"] = self.driver.find_element(${by}).text`,
+      `self.driver.find_element(${by}).click()`,
+    ];
+  }
+
+  return [
+    `# TODO: handle action "${action}"`,
+    `self.driver.find_element(${by})`,
+  ];
+}
+
+// ── JavaScript Generator ──────────────────────────────────────────────────────
+
+function generateFullJavaScriptScript(
+  steps: Step[],
   pref: LocatorPref,
-): string | null {
+): string {
+  if (!steps.length) return "";
+  const pageUrl = steps[0]?.pageUrl || "https://example.com";
+  const lines: string[] = [
+    "// Generated by Automation Recorder",
+    "const { Builder, By, Key, until } = require('selenium-webdriver');",
+    "",
+    "(async function testRecording() {",
+    "  let driver = await new Builder().forBrowser('chrome').build();",
+    "  let vars = {};",
+    "  try {",
+    `    await driver.get("${escapeJS(pageUrl)}");`,
+  ];
+  let currentPage = pageUrl;
+  steps.forEach((step, index) => {
+    if (step.pageUrl && step.pageUrl !== currentPage) {
+      lines.push(`    await driver.get("${escapeJS(step.pageUrl)}");`);
+      currentPage = step.pageUrl;
+    }
+    const stepLine = generateJavaScriptStep(step, pref);
+    if (!stepLine) return;
+    const action = (step.action || step.type || "step").toString();
+    const pageName = step.pageName ? ` [${step.pageName}]` : "";
+    lines.push(`    // Step ${index + 1}: ${action}${pageName}`);
+    stepLine.split("\n").forEach((l) => lines.push(`    ${l}`));
+  });
+  lines.push("  } finally {", "    await driver.quit();", "  }", "})();");
+  return lines.join("\n");
+}
+
+function generateJavaScriptStep(step: Step, pref: LocatorPref): string | null {
   const selector = normalizeSelector(step);
   const preferred = getPreferredLocator(selector, pref);
   if (!preferred) return null;
-
-  const locator =
+  const byMethod =
     preferred.type === "css"
-      ? `By.cssSelector("${escapeForJava(preferred.value)}")`
-      : `By.xpath("${escapeForJava(preferred.value)}")`;
-
+      ? `By.css("${escapeJS(preferred.value)}")`
+      : `By.xpath("${escapeJS(preferred.value)}")`;
   const action = (step.action || step.type || "").toString().toLowerCase();
   const rawValue = step.value;
+  if (action === "click" || action === "select" || action === "check")
+    return `await driver.findElement(${byMethod}).click();`;
+  if (action === "input") {
+    const v = rawValue != null ? String(rawValue) : "";
+    return `await driver.findElement(${byMethod}).clear();\nawait driver.findElement(${byMethod}).sendKeys("${escapeJS(v)}");`;
+  }
+  if (action === "submit")
+    return `await driver.findElement(${byMethod}).submit();`;
+  return `// TODO: handle action "${action}"\nawait driver.findElement(${byMethod});`;
+}
 
-  if (action === "click") return `driver.findElement(${locator}).click();`;
-  if (action === "select" || action === "check")
+// ── Java Generator ────────────────────────────────────────────────────────────
+
+function generateFullJavaScript(steps: Step[], pref: LocatorPref): string {
+  if (!steps.length) return "";
+  const pageUrl = steps[0]?.pageUrl || "https://example.com";
+  const lines: string[] = [
+    "// Generated by Automation Recorder",
+    "import org.openqa.selenium.By;",
+    "import org.openqa.selenium.WebDriver;",
+    "import org.openqa.selenium.WebElement;",
+    "import org.openqa.selenium.chrome.ChromeDriver;",
+    "import org.junit.After;",
+    "import org.junit.Before;",
+    "import org.junit.Test;",
+    "import java.util.HashMap;",
+    "import java.util.Map;",
+    "",
+    "public class TestRecording {",
+    "  private WebDriver driver;",
+    "  private Map<String, Object> vars;",
+    "",
+    "  @Before",
+    "  public void setUp() {",
+    "    driver = new ChromeDriver();",
+    "    vars = new HashMap<>();",
+    "  }",
+    "",
+    "  @After",
+    "  public void tearDown() {",
+    "    driver.quit();",
+    "  }",
+    "",
+    "  @Test",
+    "  public void testRecording() {",
+    `    driver.get("${escapeJava(pageUrl)}");`,
+  ];
+  let currentPage = pageUrl;
+  steps.forEach((step, index) => {
+    if (step.pageUrl && step.pageUrl !== currentPage) {
+      lines.push(`    driver.get("${escapeJava(step.pageUrl)}");`);
+      currentPage = step.pageUrl;
+    }
+    const stepLine = generateJavaStep(step, pref);
+    if (!stepLine) return;
+    const action = (step.action || step.type || "step").toString();
+    const pageName = step.pageName ? ` [${step.pageName}]` : "";
+    lines.push(`    // Step ${index + 1}: ${action}${pageName}`);
+    stepLine.split("\n").forEach((l) => lines.push(`    ${l}`));
+  });
+  lines.push("  }", "}");
+  return lines.join("\n");
+}
+
+function generateJavaStep(step: Step, pref: LocatorPref): string | null {
+  const selector = normalizeSelector(step);
+  const preferred = getPreferredLocator(selector, pref);
+  if (!preferred) return null;
+  const locator =
+    preferred.type === "css"
+      ? `By.cssSelector("${escapeJava(preferred.value)}")`
+      : `By.xpath("${escapeJava(preferred.value)}")`;
+  const action = (step.action || step.type || "").toString().toLowerCase();
+  const rawValue = step.value;
+  if (action === "click" || action === "select" || action === "check")
     return `driver.findElement(${locator}).click();`;
   if (action === "input") {
     const v = rawValue != null ? String(rawValue) : "";
-    return `driver.findElement(${locator}).clear();\ndriver.findElement(${locator}).sendKeys("${escapeForJava(v)}");`;
+    return `driver.findElement(${locator}).clear();\ndriver.findElement(${locator}).sendKeys("${escapeJava(v)}");`;
   }
   if (action === "submit") return `driver.findElement(${locator}).submit();`;
   return `// TODO: handle action "${action}"\ndriver.findElement(${locator});`;
@@ -797,7 +1139,23 @@ function formatTime(raw: any): string {
   }
 }
 
-function escapeForJava(text: string): string {
+function escapeJava(text: string): string {
+  return text
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n");
+}
+
+function escapePy(text: string): string {
+  return text
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\r/g, "\\r")
+    .replace(/\n/g, "\\n");
+}
+
+function escapeJS(text: string): string {
   return text
     .replace(/\\/g, "\\\\")
     .replace(/"/g, '\\"')
@@ -851,6 +1209,7 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "8px 12px",
     backgroundColor: "#1e1e2e",
     borderBottom: "1px solid #45475a",
+    flexWrap: "wrap" as const,
   },
   locatorLabel: { fontSize: 11, color: "#6c7086", marginRight: 4 },
   locatorChip: {
@@ -866,6 +1225,11 @@ const styles: Record<string, React.CSSProperties> = {
     backgroundColor: "#cba6f720",
     borderColor: "#cba6f7",
     color: "#cba6f7",
+  },
+  langChipActive: {
+    backgroundColor: "#89b4fa20",
+    borderColor: "#89b4fa",
+    color: "#89b4fa",
   },
   tabBody: { backgroundColor: "#313244", borderRadius: "0 8px 8px 8px" },
   tableWrapper: { overflowX: "auto" as const },
@@ -1026,6 +1390,16 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 10,
     color: "#a6adc8",
   },
+  captureBlock: {
+    marginTop: 4,
+    padding: "3px 6px",
+    backgroundColor: "#1e1e2e",
+    borderRadius: 4,
+    border: "1px solid #45475a",
+  },
+  captureRow: { fontSize: 10, lineHeight: "16px" },
+  captureLabel: { color: "#6c7086", fontWeight: 600 },
+  captureValue: { color: "#94e2d5", fontFamily: "monospace" },
 };
 
 export default RecordingDetailsTabs;

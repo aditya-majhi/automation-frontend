@@ -1,8 +1,8 @@
+import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
-import { useNavigate } from "react-router-dom";
 
 const Navbar = () => {
-  const { user, logout, isAuthenticated } = useAuth();
+  const { user, logout, isAdmin } = useAuth();
   const navigate = useNavigate();
 
   const handleLogout = () => {
@@ -12,17 +12,27 @@ const Navbar = () => {
 
   return (
     <nav style={styles.nav}>
-      <span style={styles.brand} onClick={() => navigate("/")}>
-        🤖 Automation Recorder
-      </span>
-      {isAuthenticated && (
-        <div style={styles.right}>
-          <span style={styles.userText}>👤 {user?.name}</span>
-          <button style={styles.logoutBtn} onClick={handleLogout}>
-            Logout
-          </button>
-        </div>
-      )}
+      <div style={styles.left}>
+        <Link to="/" style={styles.brand}>
+          🤖 Automation Recorder
+        </Link>
+      </div>
+      <div style={styles.right}>
+        {isAdmin && (
+          <Link to="/admin" style={styles.adminLink}>
+            ⚙️ Admin
+          </Link>
+        )}
+        <span style={styles.userName}>{user?.name}</span>
+        <span style={styles.roleBadge}>
+          {user?.roles?.includes("ADMIN")
+            ? "Admin"
+            : user?.roles?.join(", ") || "User"}
+        </span>
+        <button onClick={handleLogout} style={styles.logoutBtn}>
+          Logout
+        </button>
+      </div>
     </nav>
   );
 };
@@ -32,34 +42,57 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
-    padding: "12px 24px",
+    padding: "14px 24px",
     backgroundColor: "#1e1e2e",
-    color: "#fff",
     borderBottom: "1px solid #313244",
   },
+  left: {
+    display: "flex",
+    alignItems: "center",
+  },
   brand: {
-    fontSize: "18px",
-    fontWeight: "bold",
-    cursor: "pointer",
     color: "#cba6f7",
+    textDecoration: "none",
+    fontWeight: "bold",
+    fontSize: "16px",
   },
   right: {
     display: "flex",
     alignItems: "center",
-    gap: "16px",
+    gap: "14px",
   },
-  userText: {
+  adminLink: {
+    color: "#fab387",
+    textDecoration: "none",
+    fontSize: "13px",
+    fontWeight: 600,
+    padding: "6px 14px",
+    backgroundColor: "#fab38720",
+    borderRadius: "6px",
+    border: "1px solid #fab38740",
+  },
+  userName: {
+    color: "#cdd6f4",
     fontSize: "14px",
-    color: "#a6e3a1",
+    fontWeight: 500,
+  },
+  roleBadge: {
+    fontSize: "11px",
+    padding: "3px 10px",
+    borderRadius: "12px",
+    backgroundColor: "#cba6f720",
+    color: "#cba6f7",
+    fontWeight: 600,
   },
   logoutBtn: {
-    padding: "6px 14px",
-    backgroundColor: "#f38ba8",
-    color: "#1e1e2e",
-    border: "none",
+    padding: "7px 16px",
+    backgroundColor: "transparent",
+    color: "#f38ba8",
+    border: "1px solid #f38ba850",
     borderRadius: "6px",
+    fontSize: "13px",
     cursor: "pointer",
-    fontWeight: "bold",
+    fontWeight: 500,
   },
 };
 

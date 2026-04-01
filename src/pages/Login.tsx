@@ -1,10 +1,11 @@
+// d:\AutomationModule\AutomationFrontend\automation-frontend\src\pages\Login.tsx
 import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import FormInput from "../components/FormInput";
 
 const LoginPage = () => {
-  const { login } = useAuth();
+  const { login, token, user, isAdmin, loading: authLoading } = useAuth();
   const navigate = useNavigate();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -15,10 +16,21 @@ const LoginPage = () => {
     e.preventDefault();
     setError("");
     setLoading(true);
+
+    console.log("[LoginPage] submit start", { email });
+
     try {
       await login(email, password);
+
+      console.log("[LoginPage] login resolved", {
+        localStorageToken: localStorage.getItem("token"),
+        localStorageUser: localStorage.getItem("user"),
+      });
+
       navigate("/");
+      console.log("[LoginPage] navigate('/') called");
     } catch (err: unknown) {
+      console.error("[LoginPage] login failed", err);
       const msg =
         err instanceof Error ? err.message : "Login failed. Try again.";
       setError(msg);
@@ -26,6 +38,15 @@ const LoginPage = () => {
       setLoading(false);
     }
   };
+
+  console.log("[LoginPage] render", {
+    token,
+    user,
+    isAdmin,
+    authLoading,
+    localStorageToken: localStorage.getItem("token"),
+    localStorageUser: localStorage.getItem("user"),
+  });
 
   return (
     <div style={styles.page}>
@@ -48,6 +69,11 @@ const LoginPage = () => {
             onChange={setPassword}
             placeholder="••••••••"
           />
+          <div style={styles.forgotRow}>
+            <Link to="/forgot-password" style={styles.forgotLink}>
+              Forgot password?
+            </Link>
+          </div>
           <button style={styles.btn} type="submit" disabled={loading}>
             {loading ? "Signing in..." : "Sign In"}
           </button>
@@ -96,6 +122,16 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: "8px",
     fontSize: "13px",
     marginBottom: "14px",
+  },
+  forgotRow: {
+    textAlign: "right",
+    marginBottom: "12px",
+    marginTop: "-4px",
+  },
+  forgotLink: {
+    color: "#6c7086",
+    fontSize: "12px",
+    textDecoration: "none",
   },
   btn: {
     width: "100%",

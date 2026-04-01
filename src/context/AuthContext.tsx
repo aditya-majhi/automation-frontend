@@ -10,27 +10,52 @@ import { useExtension } from "../hooks/useExtension";
 
 interface User {
   id: string;
-  name: string;
   email: string;
+  name: string;
+  roles: string[];
 }
 
 interface AuthContextType {
   user: User | null;
+  token: string | null;
+  isAuthenticated: boolean;
   login: (email: string, password: string) => Promise<void>;
   register: (name: string, email: string, password: string) => Promise<void>;
   logout: () => void;
-  isAuthenticated: boolean;
+  isAdmin: boolean;
+  hasRole: (role: string) => boolean;
+  loading: boolean;
 }
 
-const AuthContext = createContext<AuthContextType | null>(null);
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+export const useAuth = () => {
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error("useAuth must be used within AuthProvider");
+  return ctx;
+};
 
 export const AuthProvider = ({ children }: { children: ReactNode }) => {
-  const [user, setUser] = useState<User | null>(() => {
-    const stored = localStorage.getItem("user");
-    return stored ? JSON.parse(stored) : null;
-  });
+  const [user, setUser] = useState<User | null>(null);
+  const [token, setAuthToken] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  // extension integration
+  useEffect(() => {
+    const savedToken = localStorage.getItem("token");
+    const savedUser = localStorage.getItem("user");
+    if (savedToken && savedUser) {
+      try {
+        const parsedUser = JSON.parse(savedUser) as User;
+        setAuthToken(savedToken);
+        setUser(parsedUser);
+      } catch {
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
+      }
+    }
+    setLoading(false);
+  }, []);
+
   const { setToken } = useExtension();
 
   // On app load, if we already have a token in localStorage, push it to extension
@@ -44,44 +69,67 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   }, [setToken]);
 
   const login = async (email: string, password: string) => {
-    const data = await authService.login(email, password);
-    localStorage.setItem("token", data.token);
-    localStorage.setItem("user", JSON.stringify(data.user));
-    setUser(data.user);
-
-    // sync JWT to extension so its API calls don't get 401
-    setToken(data.token);
+    const result = await authService.login(email, password);
+    const userData: User = {
+      id: result.user.id,
+      email: result.user.email,
+      name: result.user.name,
+      roles: result.user.roles || [],
+    };
+    setToken(result.token);
+    setAuthToken(result.token);
+    setUser(userData);
+    localStorage.setItem("token", result.token);
+    localStorage.setItem("user", JSON.stringify(userData));
   };
 
   const register = async (name: string, email: string, password: string) => {
-    const data = await authService.register(name, email, password);
-    localStorage.setItem("token", data.token);
-    localStorage.setItem("user", JSON.stringify(data.user));
-    setUser(data.user);
-
-    // sync JWT to extension after registration as well
-    setToken(data.token);
+    const result = await authService.register(name, email, password);
+    const userData: User = {
+      id: result.user.id,
+      email: result.user.email,
+      name: result.user.name,
+      roles: result.user.roles || [],
+    };
+    setToken(result.token);
+    setAuthToken(result.token);
+    setUser(userData);
+    localStorage.setItem("token", result.token);
+    localStorage.setItem("user", JSON.stringify(userData));
   };
 
   const logout = () => {
+    setToken(null);
+    setAuthToken(null);
+    setUser(null);
     localStorage.removeItem("token");
     localStorage.removeItem("user");
-    setUser(null);
-    // optional: you can also clear the token in the extension if you extend SET_TOKEN to handle null
-    // setToken(null);
+  };
+
+  const isAuthenticated = Boolean(token && user); // ← ADD THIS
+  const isAdmin = user?.roles?.includes("ADMIN") ?? false;
+
+  const hasRole = (role: string) => {
+    if (!user?.roles) return false;
+    if (user.roles.includes("ADMIN")) return true;
+    return user.roles.includes(role);
   };
 
   return (
     <AuthContext.Provider
-      value={{ user, login, register, logout, isAuthenticated: !!user }}
+      value={{
+        user,
+        token,
+        isAuthenticated,
+        login,
+        register,
+        logout,
+        isAdmin,
+        hasRole,
+        loading,
+      }}
     >
       {children}
     </AuthContext.Provider>
   );
-};
-
-export const useAuth = () => {
-  const ctx = useContext(AuthContext);
-  if (!ctx) throw new Error("useAuth must be used within AuthProvider");
-  return ctx;
 };
