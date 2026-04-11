@@ -1,10 +1,11 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { recordingService } from "../api/services";
+import { recordingService, testCaseService } from "../api/services";
 import { useExtension } from "../hooks/useExtension";
 import ExtensionBanner from "../components/ExtensionBanner";
 import RecordingControls from "../components/RecordingControl";
 import RecordingDetailsTabs from "../components/RecordingDetailsTabs";
+import TestCaseAssertionBuilder from "../components/AssertionBuilder";
 
 interface Recording {
   id: string;
@@ -19,11 +20,15 @@ interface Recording {
 const TestCaseDetailPage = () => {
   const { testCaseId } = useParams<{ testCaseId: string }>();
   const navigate = useNavigate();
-  const [recordings, setRecordings] = useState<Recording[]>([]);
+  const [recording, setRecording] = useState<Recording | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [recordingSuccess, setRecordingSuccess] = useState("");
+  const [baseScript, setBaseScript] = useState("");
+  const [finalScript, setFinalScript] = useState("");
+  const baseScriptRef = useRef("");
+  const lastSavedScriptRef = useRef("");
+  const saveTimerRef = useRef<number | null>(null);
 
   const {
     status: extensionStatus,
@@ -33,21 +38,79 @@ const TestCaseDetailPage = () => {
     checkExtension,
   } = useExtension();
 
-  const fetchRecordings = async () => {
+  const fetchRecording = async () => {
     if (!testCaseId) return;
     try {
+      setError("");
       const data = await recordingService.getByTestCase(testCaseId);
-      setRecordings(data);
+      setRecording(data || null);
     } catch {
-      setError("Failed to fetch recordings");
+      setError("Failed to fetch recording");
     } finally {
       setLoading(false);
     }
   };
 
+  const fetchScripts = async () => {
+    if (!testCaseId) return;
+    try {
+      const data = await testCaseService.getScripts(testCaseId);
+      const fetchedBase = data?.base_script || "";
+      setBaseScript(fetchedBase);
+      setFinalScript(data?.final_script || "");
+      baseScriptRef.current = fetchedBase;
+      lastSavedScriptRef.current = fetchedBase.trim();
+    } catch {
+      // non-blocking
+    }
+  };
+
+  const handlePythonScriptGenerated = useCallback(
+    (script: string) => {
+      if (!testCaseId) return;
+      const next = (script || "").trim();
+      if (!next) return;
+      const current = (baseScriptRef.current || "").trim();
+      if (next === current || next === lastSavedScriptRef.current) return;
+
+      setBaseScript(script);
+
+      if (saveTimerRef.current) {
+        window.clearTimeout(saveTimerRef.current);
+      }
+
+      saveTimerRef.current = window.setTimeout(async () => {
+        try {
+          await testCaseService.saveBaseScript(testCaseId, script, {
+            source: "recording-tabs",
+            language: "python",
+          });
+          lastSavedScriptRef.current = next;
+          baseScriptRef.current = script;
+        } catch {
+          setError("Failed to auto-save base script");
+        }
+      }, 600);
+    },
+    [testCaseId],
+  );
+
   useEffect(() => {
-    fetchRecordings();
+    return () => {
+      if (saveTimerRef.current) {
+        window.clearTimeout(saveTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    fetchRecording();
+    fetchScripts();
   }, [testCaseId]);
+
+  useEffect(() => {
+    baseScriptRef.current = baseScript;
+  }, [baseScript]);
 
   const handleStart = async (url: string) => {
     if (!testCaseId) return;
@@ -65,11 +128,10 @@ const TestCaseDetailPage = () => {
     }
     setRecordingSuccess("Recording saved successfully!");
     setTimeout(() => setRecordingSuccess(""), 4000);
-    fetchRecordings();
+    await fetchRecording();
+    await fetchScripts();
   };
 
-  // Merge structured data from backend with raw JSON data
-  // Prefer structuredSteps/structuredVars if available
   const getRecordingForDisplay = (r: Recording) => {
     const steps = r.steps?.length ? r.steps : r.structuredSteps || [];
     const variables = r.variables?.length
@@ -83,6 +145,22 @@ const TestCaseDetailPage = () => {
     };
   };
 
+  const recordingDisplay = useMemo(
+    () =>
+      recording
+        ? getRecordingForDisplay(recording)
+        : { steps: [], variables: [], videoUrl: null },
+    [recording],
+  );
+
+  const assertionApi = useMemo(
+    () => ({
+      getAssertionOperators: testCaseService.getAssertionOperators,
+      generateFinalScript: testCaseService.generateFinalScript,
+    }),
+    [],
+  );
+
   return (
     <div style={styles.page}>
       <button style={styles.back} onClick={() => navigate(-1)}>
@@ -90,7 +168,7 @@ const TestCaseDetailPage = () => {
       </button>
 
       <div style={styles.header}>
-        <h2 style={styles.title}>🎥 Recordings</h2>
+        <h2 style={styles.title}>🎥 Recording</h2>
       </div>
 
       {extensionStatus === "checking" && (
@@ -114,49 +192,78 @@ const TestCaseDetailPage = () => {
       {recordingSuccess && <div style={styles.success}>{recordingSuccess}</div>}
       {error && <div style={styles.error}>{error}</div>}
 
-      <h3 style={styles.sectionTitle}>Past Recordings</h3>
+      <div style={styles.sectionTitleRow}>
+        <h3 style={{ ...styles.sectionTitle, marginBottom: 0 }}>
+          Current Recording
+        </h3>
+        {testCaseId && (
+          <TestCaseAssertionBuilder
+            testCaseId={testCaseId}
+            baseScript={baseScript}
+            variables={recordingDisplay.variables}
+            api={assertionApi}
+            onFinalScriptGenerated={(script: string) => {
+              setFinalScript(script);
+            }}
+            setActiveTab={() => {}}
+          />
+        )}
+      </div>
 
       {loading ? (
         <p style={styles.empty}>Loading...</p>
-      ) : recordings.length === 0 ? (
+      ) : !recording ? (
         <div style={styles.emptyBox}>
-          <p style={styles.emptyTitle}>No recordings yet</p>
+          <p style={styles.emptyTitle}>No recording yet</p>
           <p style={styles.emptySub}>
             Enter a URL above and click Start Recording.
           </p>
         </div>
       ) : (
-        recordings.map((r) => (
-          <div key={r.id} style={styles.card}>
-            <div
-              style={styles.cardHeader}
-              onClick={() => setExpandedId(expandedId === r.id ? null : r.id)}
-            >
-              <div>
-                <div style={styles.cardTitle}>
-                  🎬 {new Date(r.createdAt).toLocaleString()}
-                </div>
-                <div style={styles.cardSub}>
-                  {(r.structuredSteps || r.steps || []).length} steps
-                  {(r.structuredVars || r.variables || []).length > 0
-                    ? ` · ${(r.structuredVars || r.variables || []).length} variables`
-                    : ""}
-                  {r.videoUrl ? " · 📹 Video" : ""}
-                </div>
+        <div style={styles.card}>
+          <div style={styles.cardHeader}>
+            <div>
+              <div style={styles.cardTitle}>
+                🎬 {new Date(recording.createdAt).toLocaleString()}
               </div>
-              <span style={styles.toggle}>
-                {expandedId === r.id ? "▲" : "▼"}
-              </span>
+              <div style={styles.cardSub}>
+                {(recording.structuredSteps || recording.steps || []).length}{" "}
+                steps
+                {(recording.structuredVars || recording.variables || [])
+                  .length > 0
+                  ? ` · ${(recording.structuredVars || recording.variables || []).length} variables`
+                  : ""}
+                {recording.videoUrl ? " · 📹 Video" : ""}
+              </div>
             </div>
-
-            {expandedId === r.id && (
-              <div style={styles.cardBody}>
-                <RecordingDetailsTabs recording={getRecordingForDisplay(r)} />
-              </div>
-            )}
           </div>
-        ))
+
+          <div style={styles.cardBody}>
+            <RecordingDetailsTabs
+              recording={recordingDisplay}
+              onPythonScriptGenerated={handlePythonScriptGenerated}
+            />
+          </div>
+        </div>
       )}
+
+      {finalScript ? (
+        <div style={styles.finalScriptBox}>
+          <div style={styles.finalScriptHeader}>
+            <span style={styles.finalScriptTitle}>
+              Final Script with Assertions
+            </span>
+            <button
+              type="button"
+              style={styles.copyBtn}
+              onClick={() => navigator.clipboard.writeText(finalScript)}
+            >
+              Copy
+            </button>
+          </div>
+          <pre style={styles.finalScriptCode}>{finalScript}</pre>
+        </div>
+      ) : null}
     </div>
   );
 };
@@ -188,10 +295,16 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: "20px",
     color: "#cba6f7",
   },
+  sectionTitleRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 12,
+    marginBottom: 14,
+  },
   sectionTitle: {
     fontSize: "15px",
     color: "#a6adc8",
-    marginBottom: "14px",
     fontWeight: "600",
   },
   checking: {
@@ -247,7 +360,6 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
-    cursor: "pointer",
   },
   cardTitle: {
     fontSize: "14px",
@@ -259,10 +371,49 @@ const styles: Record<string, React.CSSProperties> = {
     color: "#6c7086",
     marginTop: "4px",
   },
-  toggle: { color: "#6c7086", fontSize: "12px" },
   cardBody: {
     padding: "0 16px 16px",
     borderTop: "1px solid #45475a",
+  },
+  finalScriptBox: {
+    backgroundColor: "#313244",
+    borderRadius: "10px",
+    marginTop: "12px",
+    border: "1px solid #a6e3a1",
+    overflow: "hidden",
+  },
+  finalScriptHeader: {
+    padding: "12px 16px",
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    borderBottom: "1px solid #45475a",
+  },
+  finalScriptTitle: {
+    fontSize: 13,
+    fontWeight: 700,
+    color: "#a6e3a1",
+  },
+  copyBtn: {
+    background: "#45475a",
+    border: "none",
+    color: "#cdd6f4",
+    padding: "4px 10px",
+    borderRadius: 4,
+    cursor: "pointer",
+    fontSize: 11,
+  },
+  finalScriptCode: {
+    padding: 14,
+    backgroundColor: "#1e1e2e",
+    borderRadius: 0,
+    border: "none",
+    fontSize: 11,
+    color: "#cdd6f4",
+    whiteSpace: "pre-wrap",
+    margin: 0,
+    maxHeight: 420,
+    overflowY: "auto",
   },
 };
 

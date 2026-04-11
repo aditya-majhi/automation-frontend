@@ -8,6 +8,7 @@ import ProjectsPage from "./pages/Projects";
 import ProjectDetailPage from "./pages/ProjectDetail";
 import ModuleDetailPage from "./pages/ModuleDetail";
 import TestCaseDetailPage from "./pages/TestCaseDetail";
+import ExecutionPage from "./pages/ExecutionPage";
 import AdminLayout from "./components/AdminLayout";
 import UsersPage from "./pages/UserManagement";
 import RolesPage from "./pages/RoleManagement";
@@ -59,6 +60,14 @@ const App = () => {
             element={
               <ProtectedRoute>
                 <TestCaseDetailPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/executions"
+            element={
+              <ProtectedRoute>
+                <ExecutionPage />
               </ProtectedRoute>
             }
           />

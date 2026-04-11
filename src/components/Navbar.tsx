@@ -16,7 +16,17 @@ const Navbar = () => {
         <Link to="/" style={styles.brand}>
           🤖 Automation Recorder
         </Link>
+
+        <div style={styles.navLinks}>
+          <Link to="/" style={styles.navLink}>
+            Projects
+          </Link>
+          <Link to="/executions" style={styles.navLink}>
+            Executions
+          </Link>
+        </div>
       </div>
+
       <div style={styles.right}>
         {isAdmin && (
           <Link to="/admin" style={styles.adminLink}>
@@ -45,10 +55,14 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "14px 24px",
     backgroundColor: "#1e1e2e",
     borderBottom: "1px solid #313244",
+    gap: "16px",
+    flexWrap: "wrap",
   },
   left: {
     display: "flex",
     alignItems: "center",
+    gap: "18px",
+    flexWrap: "wrap",
   },
   brand: {
     color: "#cba6f7",
@@ -56,10 +70,25 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: "bold",
     fontSize: "16px",
   },
+  navLinks: {
+    display: "flex",
+    alignItems: "center",
+    gap: "10px",
+  },
+  navLink: {
+    color: "#cdd6f4",
+    textDecoration: "none",
+    fontSize: "14px",
+    fontWeight: 600,
+    padding: "6px 10px",
+    borderRadius: "6px",
+    backgroundColor: "#313244",
+  },
   right: {
     display: "flex",
     alignItems: "center",
     gap: "14px",
+    flexWrap: "wrap",
   },
   adminLink: {
     color: "#fab387",

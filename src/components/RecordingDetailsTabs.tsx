@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type Step = {
   type?: string;
@@ -48,12 +48,34 @@ type Variable = {
   [key: string]: any;
 };
 
+type ActionModel = {
+  action:
+    | "click"
+    | "input"
+    | "submit"
+    | "hover"
+    | "check"
+    | "uncheck"
+    | "select";
+  locatorType: "xpath" | "css";
+  locator: string;
+  value?: string;
+  waitType?: "clickable" | "visible" | "url_or_element";
+  targetTag?: string;
+  inputType?: string;
+  enumValues?: Array<{ value: string; label: string }> | null;
+  pageName?: string;
+  contextMeta?: any;
+  expectsNavigation?: boolean;
+};
+
 interface RecordingDetailsTabsProps {
   recording: {
     steps: Step[];
     variables?: Variable[];
     videoUrl?: string | null;
   };
+  onPythonScriptGenerated?: (script: string) => void;
 }
 
 type TabKey = "steps" | "variables" | "selenium" | "video";
@@ -177,6 +199,257 @@ function getLocatorLabel(type: string): string {
   return type;
 }
 
+function isLikelyDynamicToken(value: string): boolean {
+  const v = value.toLowerCase();
+  return (
+    /(^|[-_])(item|row|col|cell|node|react-select|css|ng|ember|vue)([-_]\d+)+$/.test(
+      v,
+    ) ||
+    /^css-[a-z0-9]+$/.test(v) ||
+    /^[a-f0-9]{6,}$/.test(v)
+  );
+}
+
+function hasPositionalPattern(locator: string): boolean {
+  return /nth-of-type|position\(\)|\[\d+\]/i.test(locator);
+}
+
+function isVeryGenericLocator(type: "xpath" | "css", locator: string): boolean {
+  const l = locator.trim().toLowerCase();
+  if (type === "xpath") {
+    return (
+      l === "//a" ||
+      l === "(//a)[1]" ||
+      l === "//" ||
+      l === "//button" ||
+      l === "(//button)[1]" ||
+      l === "//div" ||
+      l === "(//div)[1]" ||
+      l === "//*"
+    );
+  }
+  return (
+    l === "" ||
+    l === "a" ||
+    l === "button" ||
+    l === "div" ||
+    l === "*" ||
+    l === "a.router-link"
+  );
+}
+
+function locatorQuality(type: "xpath" | "css", locator: string): number {
+  const l = locator.trim();
+  let score = 0;
+
+  if (isVeryGenericLocator(type, l)) score -= 120;
+  if (isDiscardableCandidate(type, l)) score -= 60;
+  if (hasPositionalPattern(l)) score -= 20;
+
+  if (/data-testid|data-test|data-qa|data-cy/.test(l)) score += 55;
+  if (/aria-label|@aria-label/.test(l)) score += 35;
+  if (type === "css" && /#[-\w]+/.test(l)) score += 30;
+  if (type === "xpath" && /@id=/.test(l)) score += 30;
+  if (type === "css" && /\[name=/.test(l)) score += 20;
+  if (type === "xpath" && /@name=/.test(l)) score += 20;
+  if (/href|@href/.test(l)) score += 18;
+  if (type === "xpath" && /normalize-space\(\)=/.test(l)) score += 12;
+
+  if (l.length > 8 && l.length < 180) score += 6;
+  return score;
+}
+
+function escapeXPathLiteral(text: string): string {
+  if (!text.includes("'")) return `'${text}'`;
+  if (!text.includes('"')) return `"${text}"`;
+  return `concat('${text.replace(/'/g, `', "'", '`)}')`;
+}
+
+function getClickTextHints(step: Step): string[] {
+  const raw = [
+    step.buttonValue != null ? String(step.buttonValue) : "",
+    step.fieldName != null ? String(step.fieldName) : "",
+    step.contextMeta?.label != null ? String(step.contextMeta.label) : "",
+    step.contextMeta?.text != null ? String(step.contextMeta.text) : "",
+    step.text != null ? String(step.text) : "",
+  ];
+
+  return Array.from(
+    new Set(
+      raw
+        .map((x) => x.trim())
+        .filter((x) => x.length > 0 && x.length < 120)
+        .filter(
+          (x) => !/^(home|homepage|page|form|forms|menu|section)$/i.test(x),
+        ),
+    ),
+  );
+}
+
+function buildTextClickCandidates(
+  step: Step,
+): Array<{ locatorType: "xpath"; locator: string }> {
+  const texts = getClickTextHints(step);
+  const candidates: Array<{ locatorType: "xpath"; locator: string }> = [];
+
+  for (const text of texts) {
+    const escaped = escapeXPathLiteral(text);
+
+    candidates.push({
+      locatorType: "xpath",
+      locator: `//a[normalize-space()=${escaped}] | //button[normalize-space()=${escaped}]`,
+    });
+
+    candidates.push({
+      locatorType: "xpath",
+      locator:
+        `//a[contains(normalize-space(), ${escaped})] | ` +
+        `//button[contains(normalize-space(), ${escaped})] | ` +
+        `//*[@role='button' and contains(normalize-space(), ${escaped})]`,
+    });
+  }
+
+  return candidates;
+}
+
+function buildIdAnchoredTextCandidates(
+  step: Step,
+): Array<{ locatorType: "xpath"; locator: string }> {
+  const s = normalizeSelector(step);
+
+  const rel = sanitizePythonXPath(s?.relativeXPath || undefined);
+  const xp = sanitizePythonXPath(s?.xpath || undefined);
+  const css = s?.css?.trim();
+
+  const idToken =
+    (rel ? extractIdFromLocator("xpath", rel) : null) ||
+    (xp ? extractIdFromLocator("xpath", xp) : null) ||
+    (css ? extractIdFromLocator("css", css) : null);
+
+  if (!idToken) return [];
+
+  const idLit = escapeXPathLiteral(idToken);
+  const texts = getClickTextHints(step);
+  const out: Array<{ locatorType: "xpath"; locator: string }> = [];
+
+  for (const text of texts) {
+    const tx = escapeXPathLiteral(text);
+
+    out.push({
+      locatorType: "xpath",
+      locator:
+        "//*[@id=" +
+        idLit +
+        "]//*[self::a or self::button or @role='button'][normalize-space()=" +
+        tx +
+        "]",
+    });
+
+    out.push({
+      locatorType: "xpath",
+      locator:
+        "//*[@id=" +
+        idLit +
+        "]//*[self::a or self::button or @role='button'][contains(normalize-space(), " +
+        tx +
+        ")]",
+    });
+
+    out.push({
+      locatorType: "xpath",
+      locator:
+        "//*[self::a or self::button or @role='button'][@id=" +
+        idLit +
+        " and normalize-space()=" +
+        tx +
+        "]",
+    });
+  }
+
+  return out;
+}
+
+function isDiscardableCandidate(
+  type: "xpath" | "css",
+  locator: string,
+): boolean {
+  const l = locator.trim().toLowerCase();
+
+  if (isVeryGenericLocator(type, l)) return true;
+
+  if (
+    hasPositionalPattern(l) &&
+    !/@id=|#|data-testid|data-test|data-qa|@name=|\[name=/.test(l)
+  ) {
+    return true;
+  }
+
+  if (/router-link|css-\w+|ng-\w+|ember-\w+/.test(l)) return true;
+
+  // Do not hard-discard dynamic-looking ids globally.
+  // They may still be the only usable anchor on some sites.
+  return false;
+}
+
+function getLocatorCandidates(
+  step: Step,
+): Array<{ locatorType: "xpath" | "css"; locator: string }> {
+  const s = normalizeSelector(step);
+  const raw: Array<{ locatorType: "xpath" | "css"; locator: string }> = [];
+
+  const rel = sanitizePythonXPath(s?.relativeXPath || undefined);
+  const xp = sanitizePythonXPath(s?.xpath || undefined);
+  const css = s?.css?.trim();
+
+  if (rel) raw.push({ locatorType: "xpath", locator: rel });
+  if (xp && xp !== rel) raw.push({ locatorType: "xpath", locator: xp });
+  if (css) raw.push({ locatorType: "css", locator: css });
+
+  const action = (step.action || step.type || "").toLowerCase();
+  if (action === "click" || action === "submit") {
+    raw.push(...buildTextClickCandidates(step));
+    raw.push(...buildIdAnchoredTextCandidates(step));
+  }
+
+  const dedupRaw = Array.from(
+    new Map(raw.map((r) => [r.locatorType + ":" + r.locator, r])).values(),
+  );
+
+  const filtered = dedupRaw.filter(
+    (c) => !isDiscardableCandidate(c.locatorType, c.locator),
+  );
+
+  // Important fallback: never return empty if raw candidates exist.
+  const pool = filtered.length > 0 ? filtered : dedupRaw;
+
+  return pool.sort(
+    (a, b) =>
+      locatorQuality(b.locatorType, b.locator) -
+      locatorQuality(a.locatorType, a.locator),
+  );
+}
+
+function getLocatorForModel(
+  step: Step,
+): { locatorType: "xpath" | "css"; locator: string } | null {
+  const candidates = getLocatorCandidates(step);
+  return candidates.length ? candidates[0] : null;
+}
+
+function extractIdFromLocator(
+  locatorType: "xpath" | "css",
+  locator: string,
+): string | null {
+  if (locatorType === "css") {
+    const m = locator.match(/#([A-Za-z0-9\-_]+)/);
+    return m?.[1] || null;
+  }
+  const m1 = locator.match(/@id\s*=\s*['"]([^'"]+)['"]/);
+  if (m1?.[1]) return m1[1];
+  const m2 = locator.match(/id\(['"]([^'"]+)['"]\)/);
+  return m2?.[1] || null;
+}
+
 // ── Page name resolution ──────────────────────────────────────────────────────
 
 function resolvePageName(obj: {
@@ -252,6 +525,7 @@ function getCapture(v: Variable): { text?: string | null; value?: any } | null {
 
 const RecordingDetailsTabs: React.FC<RecordingDetailsTabsProps> = ({
   recording,
+  onPythonScriptGenerated,
 }) => {
   const [activeTab, setActiveTab] = useState<TabKey>("steps");
   const [locatorPref, setLocatorPref] = useState<LocatorPref>("relativeXPath");
@@ -261,6 +535,17 @@ const RecordingDetailsTabs: React.FC<RecordingDetailsTabsProps> = ({
   const inputVars = variables.filter((v) => v.kind === "input");
   const outputVars = variables.filter((v) => v.kind === "output");
   const buttonVars = variables.filter((v) => v.kind === "button");
+
+  const pythonBaseScript = useMemo(
+    () => generateFullPythonScriptWithVariables(steps, variables, locatorPref),
+    [steps, variables, locatorPref],
+  );
+
+  useEffect(() => {
+    if (onPythonScriptGenerated) {
+      onPythonScriptGenerated(pythonBaseScript || "");
+    }
+  }, [pythonBaseScript, onPythonScriptGenerated]);
 
   return (
     <div>
@@ -343,6 +628,7 @@ const RecordingDetailsTabs: React.FC<RecordingDetailsTabsProps> = ({
         {activeTab === "selenium" && (
           <SeleniumScriptView
             steps={steps}
+            variables={variables}
             locatorPref={locatorPref}
             language={scriptLang}
           />
@@ -411,7 +697,7 @@ const StepsTable: React.FC<{ steps: Step[]; locatorPref: LocatorPref }> = ({
             const elementLabel = buildElementLabel(step.targetTag, selector);
             const value =
               step.value ?? step.variableValue ?? step.buttonValue ?? null;
-            const selenium = generateJavaStep(step, locatorPref);
+            const selenium = generateStepSeleniumPreview(step, locatorPref);
             const pageName = resolvePageName(step);
             const contextType = resolveContext(step);
             const ctxInfo =
@@ -827,20 +1113,29 @@ const VariableRow: React.FC<{
 
 const SeleniumScriptView: React.FC<{
   steps: Step[];
+  variables: Variable[]; // ADD THIS
   locatorPref: LocatorPref;
   language: ScriptLanguage;
-}> = ({ steps, locatorPref, language }) => {
+}> = ({ steps, variables, locatorPref, language }) => {
   let script = "";
   if (language === "python") {
-    script = generateFullPythonScript(steps, locatorPref);
+    script = generateFullPythonScriptWithVariables(
+      steps,
+      variables,
+      locatorPref,
+    );
   } else if (language === "javascript") {
-    script = generateFullJavaScriptScript(steps, locatorPref);
+    script = generateFullJavaScriptScriptWithVariables(
+      steps,
+      variables,
+      locatorPref,
+    );
   } else {
-    script = generateFullJavaScript(steps, locatorPref);
+    script = generateFullJavaWithVariables(steps, variables, locatorPref);
   }
 
   if (!script.trim())
-    return <div style={styles.empty}>No Selenium commands available.</div>;
+    return <div style={styles.empty}>No script generated</div>;
 
   return (
     <div style={{ position: "relative" }}>
@@ -855,6 +1150,107 @@ const SeleniumScriptView: React.FC<{
     </div>
   );
 };
+
+function isLikelyNavigationStep(step: Step): boolean {
+  const action = (step.action || step.type || "").toLowerCase();
+  const tag = (step.targetTag || "").toLowerCase();
+  if (action === "submit") return true;
+  if (action === "click" && tag === "a") return true;
+  if (step.contextMeta?.navigation === true) return true;
+  return false;
+}
+
+function isNativeSelectStep(step: Step): boolean {
+  const tag = (step.targetTag || "").toLowerCase();
+  if (tag === "select") return true;
+  if (step.inputType === "select-one" || step.inputType === "select-multiple")
+    return true;
+  return false;
+}
+
+function compressConsecutiveInputSteps(steps: Step[]): Step[] {
+  const out: Step[] = [];
+  for (const step of steps) {
+    const action = (step.action || step.type || "").toLowerCase();
+    if (action !== "input") {
+      out.push(step);
+      continue;
+    }
+
+    const prev = out[out.length - 1];
+    if (!prev) {
+      out.push(step);
+      continue;
+    }
+
+    const prevAction = (prev.action || prev.type || "").toLowerCase();
+    if (prevAction !== "input") {
+      out.push(step);
+      continue;
+    }
+
+    const prevKey = getStepLocatorKey(prev);
+    const curKey = getStepLocatorKey(step);
+    const prevVal = String(prev.value ?? "");
+    const curVal = String(step.value ?? "");
+
+    // Remove only duplicate consecutive values on same locator.
+    if (prevKey && curKey && prevKey === curKey && prevVal === curVal) {
+      continue;
+    }
+
+    out.push(step);
+  }
+  return out;
+}
+
+function toActionModel(step: Step): ActionModel | null {
+  const loc = getLocatorForModel(step);
+  if (!loc) return null;
+
+  const action = (step.action || step.type || "").toLowerCase();
+  const value = step.value != null ? String(step.value) : undefined;
+
+  if (
+    action !== "click" &&
+    action !== "input" &&
+    action !== "submit" &&
+    action !== "hover" &&
+    action !== "check" &&
+    action !== "select" &&
+    action !== "store_variable"
+  ) {
+    return null;
+  }
+
+  // Map store_variable to input-like model action for extraction phase, not interaction.
+  const mappedAction: ActionModel["action"] =
+    action === "store_variable" ? "input" : (action as ActionModel["action"]);
+
+  const waitType: ActionModel["waitType"] =
+    mappedAction === "input"
+      ? "visible"
+      : mappedAction === "click" ||
+          mappedAction === "check" ||
+          mappedAction === "select" ||
+          mappedAction === "submit"
+        ? "clickable"
+        : "visible";
+
+  return {
+    action: mappedAction,
+    locatorType: loc.locatorType,
+    locator: loc.locator,
+    value,
+    waitType,
+    targetTag: step.targetTag,
+    inputType: step.inputType,
+    enumValues: step.enumValues || null,
+    pageName: step.pageName,
+    contextMeta: step.contextMeta,
+    expectsNavigation: isLikelyNavigationStep(step),
+  };
+}
 
 // ── Python (pytest) Generator ─────────────────────────────────────────────────
 
@@ -881,183 +1277,639 @@ function getPythonXPath(step: Step): string | null {
   return sanitizePythonXPath(s?.relativeXPath || s?.xpath || null);
 }
 
-function generateFullPythonScript(steps: Step[], _pref: LocatorPref): string {
-  if (!steps.length) return "";
+// ── Helper: Variable Matching Logic ───────────────────────────────────────────
+
+function normalize(str?: string | null) {
+  return (str || "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function pickSelector(obj: any) {
+  return (
+    obj?.selector?.relativeXPath ||
+    obj?.selector?.xpath ||
+    obj?.selector?.css ||
+    obj?.selectorRelativeXpath ||
+    obj?.selectorXpath ||
+    obj?.selectorCss ||
+    ""
+  );
+}
+
+/**
+ * Find user-named variable matching step by selector + pageName
+ */
+function findNamedVariable(
+  step: Step,
+  variables: Variable[],
+): Variable | undefined {
+  const stepSel = normalize(pickSelector(step));
+  const stepPage = normalize(step.pageName || step.pageUrl);
+
+  return variables.find((v) => {
+    if (!v.name) return false;
+    const varSel = normalize(pickSelector(v));
+    const varPage = normalize(v.pageName || v.pageUrl);
+    const selectorMatch = stepSel && varSel && stepSel === varSel;
+    const pageMatch = !stepPage || !varPage || stepPage === varPage;
+    return selectorMatch && pageMatch;
+  });
+}
+
+function getStepLocatorKey(step?: Step): string {
+  if (!step) return "";
+  const s = normalizeSelector(step);
+  return s?.relativeXPath || s?.xpath || s?.css || "";
+}
+
+function inferUrlFragment(rawUrl?: string): string | null {
+  if (!rawUrl) return null;
+  try {
+    const u = new URL(rawUrl);
+    const parts = u.pathname
+      .split("/")
+      .map((p) => p.trim())
+      .filter(Boolean)
+      .filter((p) => !/^\d+$/.test(p));
+    if (!parts.length) return null;
+    return parts[parts.length - 1].toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+function buildPageContextVisibilityCandidates(
+  step: Step,
+): Array<{ locatorType: "xpath" | "css"; locator: string }> {
+  const s = normalizeSelector(step);
+  const raw: Array<{ locatorType: "xpath" | "css"; locator: string }> = [];
+
+  const rel = sanitizePythonXPath(s?.relativeXPath || undefined);
+  const xp = sanitizePythonXPath(s?.xpath || undefined);
+  const css = s?.css?.trim();
+
+  if (css) raw.push({ locatorType: "css", locator: css });
+  if (rel) raw.push({ locatorType: "xpath", locator: rel });
+  if (xp && xp !== rel) raw.push({ locatorType: "xpath", locator: xp });
+
+  const fieldName = (step.fieldName || "").trim();
+  if (fieldName) {
+    const lbl = escapeXPathLiteral(fieldName);
+    raw.push({
+      locatorType: "xpath",
+      locator:
+        `//label[contains(normalize-space(), ${lbl})]` +
+        `/following::input[1] | //label[contains(normalize-space(), ${lbl})]/following::textarea[1]`,
+    });
+  }
+
+  const dedup = Array.from(
+    new Map(raw.map((r) => [`${r.locatorType}:${r.locator}`, r])).values(),
+  );
+
+  return dedup
+    .filter((c) => !isDiscardableCandidate(c.locatorType, c.locator))
+    .sort(
+      (a, b) =>
+        locatorQuality(b.locatorType, b.locator) -
+        locatorQuality(a.locatorType, a.locator),
+    )
+    .slice(0, 5);
+}
+
+function toPyCandidateLiteral(
+  candidates: Array<{ locatorType: "xpath" | "css"; locator: string }>,
+): string {
+  return `[${candidates
+    .map((c) => `("${c.locatorType}", "${escapePy(c.locator)}")`)
+    .join(", ")}]`;
+}
+
+function buildNextStepVisibilityCandidates(
+  step?: Step,
+): Array<{ locatorType: "xpath" | "css"; locator: string }> {
+  if (!step) return [];
+
+  const raw: Array<{ locatorType: "xpath" | "css"; locator: string }> = [];
+
+  // Include full ranked candidates from the normal locator strategy.
+  const ranked = getLocatorCandidates(step);
+  raw.push(...ranked.slice(0, 6));
+
+  // Include direct selector fields as backup.
+  const s = normalizeSelector(step);
+  const rel = sanitizePythonXPath(s?.relativeXPath || undefined);
+  const xp = sanitizePythonXPath(s?.xpath || undefined);
+  const css = s?.css?.trim();
+
+  if (css) raw.push({ locatorType: "css", locator: css });
+  if (rel) raw.push({ locatorType: "xpath", locator: rel });
+  if (xp && xp !== rel) raw.push({ locatorType: "xpath", locator: xp });
+
+  // Include label-based fallback when available.
+  const fieldName = (step.fieldName || "").trim();
+  if (fieldName) {
+    const lbl = escapeXPathLiteral(fieldName);
+    raw.push({
+      locatorType: "xpath",
+      locator:
+        `//label[contains(normalize-space(), ${lbl})]/following::input[1] | ` +
+        `//label[contains(normalize-space(), ${lbl})]/following::textarea[1] | ` +
+        `//label[contains(normalize-space(), ${lbl})]/following::select[1]`,
+    });
+  }
+
+  const dedup = Array.from(
+    new Map(raw.map((r) => [`${r.locatorType}:${r.locator}`, r])).values(),
+  );
+
+  return dedup
+    .filter((c) => !isDiscardableCandidate(c.locatorType, c.locator))
+    .sort(
+      (a, b) =>
+        locatorQuality(b.locatorType, b.locator) -
+        locatorQuality(a.locatorType, a.locator),
+    )
+    .slice(0, 8);
+}
+
+// ── PYTHON GENERATOR ──────────────────────────────────────────────────────────
+
+function generateFullPythonScriptWithVariables(
+  rawSteps: Step[],
+  variables: Variable[],
+  _pref: LocatorPref = "relativeXPath",
+): string {
+  if (!rawSteps.length) return "";
+
+  // Strict mode: do not compress or remove any recorded steps.
+  const steps = rawSteps;
   const pageUrl = steps[0]?.pageUrl || "https://example.com";
 
   const lines: string[] = [
     "# Generated by Automation Recorder",
     "import pytest",
     "import time",
-    "import json",
     "from selenium import webdriver",
     "from selenium.webdriver.common.by import By",
     "from selenium.webdriver.common.action_chains import ActionChains",
     "from selenium.webdriver.support import expected_conditions as EC",
     "from selenium.webdriver.support.wait import WebDriverWait",
-    "from selenium.webdriver.common.keys import Keys",
     "from selenium.webdriver.support.ui import Select",
     "from selenium.webdriver.firefox.service import Service",
     "from selenium.webdriver.firefox.options import Options as FirefoxOptions",
+    "from selenium.common.exceptions import TimeoutException",
     "from webdriver_manager.firefox import GeckoDriverManager",
     "",
     "class TestRecording():",
     "  def setup_method(self, method):",
     "    options = FirefoxOptions()",
+    "    options.add_argument('--headless')",
+    "    options.add_argument('--width=1366')",
+    "    options.add_argument('--height=768')",
     "    service = Service(GeckoDriverManager().install())",
     "    self.driver = webdriver.Firefox(service=service, options=options)",
     "    self.vars = {}",
-    "  ",
+    "",
+    "    self._last_action_sig = None",
+    "",
+    "  def set_var(self, key, value):",
+    "    # keep latest value for assertions",
+    "    self.vars[key] = value",
+    "    # also keep history to avoid losing earlier captures",
+    "    hist = self.vars.get('__history__')",
+    "    if not isinstance(hist, dict):",
+    "      hist = {}",
+    "      self.vars['__history__'] = hist",
+    "    arr = hist.get(key)",
+    "    if not isinstance(arr, list):",
+    "      arr = []",
+    "      hist[key] = arr",
+    "    arr.append(value)",
+    "",
     "  def teardown_method(self, method):",
     "    self.driver.quit()",
-    "  ",
+    "",
+    "  def wait_click(self, by, locator, timeout=20):",
+    "    el = WebDriverWait(self.driver, timeout).until(EC.element_to_be_clickable((by, locator)))",
+    "    self.driver.execute_script(\"arguments[0].scrollIntoView({block:'center'});\", el)",
+    "    try:",
+    "      el.click()",
+    "    except Exception:",
+    "      self.driver.execute_script('arguments[0].click();', el)",
+    "    return el",
+    "",
+    "  def wait_click_any(self, candidates, timeout=20, max_matches=3):",
+    "    last_err = None",
+    "    for by_name, locator in candidates:",
+    "      by = By.XPATH if by_name == 'xpath' else By.CSS_SELECTOR",
+    "      try:",
+    "        elements = self.driver.find_elements(by, locator)",
+    "        visible = [e for e in elements if e.is_displayed() and e.is_enabled()]",
+    "        if len(visible) == 0:",
+    "          continue",
+    "        if len(visible) > max_matches:",
+    "          continue",
+    "        el = visible[0]",
+    "        self.driver.execute_script(\"arguments[0].scrollIntoView({block:'center'});\", el)",
+    "        try:",
+    "          el.click()",
+    "        except Exception:",
+    "          self.driver.execute_script('arguments[0].click();', el)",
+    "        return el",
+    "      except Exception as e:",
+    "        last_err = e",
+    "    raise last_err if last_err else TimeoutException('No locator candidates worked')",
+    "",
+    "  def wait_visible(self, by, locator, timeout=20):",
+    "    return WebDriverWait(self.driver, timeout).until(EC.visibility_of_element_located((by, locator)))",
+    "",
+    "  def wait_any_visible(self, candidates, timeout=25):",
+    "    last_err = None",
+    "    for by_name, locator in candidates:",
+    "      by = By.XPATH if by_name == 'xpath' else By.CSS_SELECTOR",
+    "      try:",
+    "        return WebDriverWait(self.driver, timeout).until(EC.visibility_of_element_located((by, locator)))",
+    "      except Exception as e:",
+    "        last_err = e",
+    "    raise last_err if last_err else TimeoutException('No visibility candidate matched')",
+    "",
+    "  def wait_input(self, by, locator, value, timeout=20):",
+    "    el = self.wait_visible(by, locator, timeout)",
+    "    self.driver.execute_script(\"arguments[0].scrollIntoView({block:'center'});\", el)",
+    "    el.clear()",
+    "    el.send_keys(value)",
+    "    return el",
+    "",
+    "  def wait_select_visible_text(self, by, locator, text, timeout=20):",
+    "    el = self.wait_visible(by, locator, timeout)",
+    "    Select(el).select_by_visible_text(text)",
+    "    return el",
+    "",
+    "  def wait_nav(self, timeout=25):",
+    "    WebDriverWait(self.driver, timeout).until(lambda d: d.execute_script('return document.readyState') == 'complete')",
+    "    time.sleep(1.5)",
+    "",
     "  def test_recording(self):",
     `    self.driver.get("${escapePy(pageUrl)}")`,
     "    self.driver.set_window_size(1366, 768)",
+    "    self.wait_nav()",
   ];
 
-  let currentPage = pageUrl;
   steps.forEach((step, index) => {
-    if (step.pageUrl && step.pageUrl !== currentPage) {
-      lines.push(`    self.driver.get("${escapePy(step.pageUrl)}")`);
-      currentPage = step.pageUrl;
-    }
-
-    const stepLines = generatePythonStep(step, index);
-    if (!stepLines?.length) return;
-
-    const action = (step.action || step.type || "step").toString();
-    const pageName = step.pageName ? ` [${step.pageName}]` : "";
-    lines.push(`    # Step ${index + 1}: ${action}${pageName}`);
-    stepLines.forEach((l) => lines.push(`    ${l}`));
+    const prev = index > 0 ? steps[index - 1] : undefined;
+    const next = index < steps.length - 1 ? steps[index + 1] : undefined;
+    const stepLines = generatePythonStepWithVariable(
+      step,
+      index,
+      variables,
+      prev,
+      next,
+    );
+    if (stepLines?.length) lines.push(...stepLines);
   });
 
   return lines.join("\n");
 }
 
-function generatePythonStep(step: Step, index: number): string[] | null {
-  const xpath = getPythonXPath(step);
-  if (!xpath) return null;
+function generatePythonStepWithVariable(
+  step: Step,
+  index: number,
+  variables: Variable[],
+  prevStep?: Step,
+  nextStep?: Step,
+): string[] | null {
+  const action = (step.action || step.type || "").toLowerCase();
+  const lines: string[] = [];
+  lines.push(
+    "# Step " +
+      (index + 1) +
+      ": " +
+      action +
+      " [" +
+      (step.pageName || "page") +
+      "]",
+  );
 
-  const by = `By.XPATH, "${escapePy(xpath)}"`;
-  const action = (step.action || step.type || "").toString().toLowerCase();
-  const v = step.value != null ? String(step.value) : "";
-  const buttonValue = step.buttonValue != null ? String(step.buttonValue) : "";
-  const varName = pythonVarKey(step, index);
+  const model = toActionModel(step);
+  const candidates = getLocatorCandidates(step);
+  const pyCandidates =
+    candidates.length > 0 ? toPyCandidateLiteral(candidates) : null;
 
-  if (action === "click" || action === "select" || action === "check") {
-    const captureExpr =
-      buttonValue || step.targetTag === "button"
-        ? `.text`
-        : `.get_attribute("value")`;
-    return [
-      `self.vars["${escapePy(varName)}"] = self.driver.find_element(${by})${captureExpr}`,
-      `self.driver.find_element(${by}).click()`,
-    ];
+  // Keep step order even if model cannot be formed.
+  if (!model) {
+    lines.push("    # Preserved step: no actionable locator/model generated");
+    return lines;
+  }
+
+  const namedVar = findNamedVariable(step, variables);
+  const varName =
+    (step.variableName && String(step.variableName).trim()) ||
+    (namedVar && namedVar.name) ||
+    "auto_" + (index + 1);
+
+  const byExpr =
+    model.locatorType === "xpath"
+      ? 'By.XPATH, "' + escapePy(model.locator) + '"'
+      : 'By.CSS_SELECTOR, "' + escapePy(model.locator) + '"';
+
+  const prevAction = (prevStep?.action || prevStep?.type || "").toLowerCase();
+  const sameLocatorAsPrev =
+    getStepLocatorKey(prevStep) === getStepLocatorKey(step);
+  const samePageAsPrev =
+    normalize(prevStep?.pageName || prevStep?.pageUrl || "") ===
+    normalize(step.pageName || step.pageUrl || "");
+
+  // Reduce duplicate click/submit/hover flakiness but keep step marker.
+  const isRapidDuplicateInteraction =
+    (action === "click" || action === "submit" || action === "hover") &&
+    prevAction === action &&
+    sameLocatorAsPrev &&
+    samePageAsPrev;
+
+  if (isRapidDuplicateInteraction) {
+    lines.push(
+      "    # Preserved step: duplicate interaction skipped for stability",
+    );
+    return lines;
+  }
+
+  const prevPage = normalize(prevStep?.pageName || prevStep?.pageUrl || "");
+  const currPage = normalize(step.pageName || step.pageUrl || "");
+  const pageChanged = !!prevPage && !!currPage && prevPage !== currPage;
+  const cameFromNavigation = !!prevStep && isLikelyNavigationStep(prevStep);
+  const shouldEnsureContext = cameFromNavigation || pageChanged;
+
+  if (action === "click" || action === "submit") {
+    const inputType = (step.inputType || "").toLowerCase();
+    const isChoice = inputType === "checkbox" || inputType === "radio";
+
+    if (isChoice) {
+      const elementId = extractIdFromLocator(model.locatorType, model.locator);
+      if (elementId) {
+        lines.push(
+          "    self.wait_click(By.CSS_SELECTOR, \"label[for='" +
+            escapePy(elementId) +
+            "']\", timeout=25)",
+        );
+      } else if (pyCandidates && candidates.length > 1) {
+        lines.push("    self.wait_click_any(" + pyCandidates + ", timeout=25)");
+      } else {
+        lines.push("    self.wait_click(" + byExpr + ", timeout=25)");
+      }
+    } else if (pyCandidates && candidates.length > 1) {
+      const timeout = model.expectsNavigation ? 25 : 20;
+      lines.push(
+        "    self.wait_click_any(" +
+          pyCandidates +
+          ", timeout=" +
+          timeout +
+          ")",
+      );
+    } else {
+      lines.push("    self.wait_click(" + byExpr + ", timeout=25)");
+    }
+
+    if (model.expectsNavigation) {
+      lines.push("    self.wait_nav()");
+      lines.push("    time.sleep(0.5)");
+
+      const nextCandidates = buildNextStepVisibilityCandidates(nextStep);
+      if (nextCandidates.length > 0) {
+        lines.push("    try:");
+        lines.push(
+          "      self.wait_any_visible(" +
+            toPyCandidateLiteral(nextCandidates) +
+            ", timeout=15)",
+        );
+        lines.push("    except Exception:");
+        lines.push("      pass");
+      }
+    }
+
+    return lines;
   }
 
   if (action === "input") {
-    return [
-      `self.driver.find_element(${by}).click()`,
-      `self.driver.find_element(${by}).send_keys("${escapePy(v)}")`,
-      `self.vars["${escapePy(varName)}"] = self.driver.find_element(${by}).get_attribute("value")`,
-    ];
+    const value = step.value != null ? String(step.value) : "";
+
+    if (shouldEnsureContext) {
+      lines.push(
+        "    time.sleep(0.5)  # Wait for post-navigation form rendering",
+      );
+    }
+
+    if (isNativeSelectStep(step)) {
+      lines.push(
+        "    self.wait_select_visible_text(" +
+          byExpr +
+          ', "' +
+          escapePy(value) +
+          '", timeout=30)',
+      );
+    } else {
+      lines.push(
+        "    self.wait_input(" +
+          byExpr +
+          ', "' +
+          escapePy(value) +
+          '", timeout=30)',
+      );
+      lines.push(
+        '    self.set_var("' +
+          varName +
+          '", self.wait_visible(' +
+          byExpr +
+          ', timeout=30).get_attribute("value"))',
+      );
+    }
+
+    if (isLikelyNavigationStep(step)) lines.push("    self.wait_nav()");
+    return lines;
   }
 
-  if (action === "submit") {
-    return [
-      `self.vars["${escapePy(varName)}"] = self.driver.find_element(${by}).text`,
-      `self.driver.find_element(${by}).click()`,
-    ];
+  if (action === "store_variable") {
+    const tag = (step.targetTag || "").toLowerCase();
+    const type = (step.inputType || "").toLowerCase();
+    const isInputLike =
+      tag === "input" || tag === "textarea" || tag === "select";
+    const isChoice = type === "checkbox" || type === "radio";
+
+    if (isChoice) {
+      lines.push(
+        '    self.set_var("' +
+          varName +
+          '", str(self.wait_visible(' +
+          byExpr +
+          ", timeout=30).is_selected()))",
+      );
+    } else if (isInputLike) {
+      lines.push(
+        '    self.set_var("' +
+          varName +
+          '", self.wait_visible(' +
+          byExpr +
+          ', timeout=30).get_attribute("value"))',
+      );
+    } else {
+      lines.push(
+        '    self.set_var("' +
+          varName +
+          '", self.wait_visible(' +
+          byExpr +
+          ", timeout=30).text)",
+      );
+    }
+    return lines;
   }
 
-  return [
-    `# TODO: handle action "${action}"`,
-    `self.driver.find_element(${by})`,
-  ];
+  if (action === "check") {
+    lines.push("    el = self.wait_visible(" + byExpr + ", timeout=25)");
+    lines.push("    if not el.is_selected():");
+    lines.push("      self.wait_click(" + byExpr + ", timeout=25)");
+    return lines;
+  }
+
+  if (action === "select") {
+    if (isNativeSelectStep(step) && step.value != null) {
+      lines.push(
+        "    self.wait_select_visible_text(" +
+          byExpr +
+          ', "' +
+          escapePy(String(step.value)) +
+          '", timeout=25)',
+      );
+    } else if (pyCandidates && candidates.length > 1) {
+      lines.push("    self.wait_click_any(" + pyCandidates + ", timeout=25)");
+    } else {
+      lines.push("    self.wait_click(" + byExpr + ", timeout=25)");
+    }
+    return lines;
+  }
+
+  if (action === "hover") {
+    lines.push(
+      "    ActionChains(self.driver).move_to_element(self.wait_visible(" +
+        byExpr +
+        ", timeout=25)).perform()",
+    );
+    return lines;
+  }
+
+  lines.push("    # Unsupported action preserved: " + action);
+  return lines;
 }
 
-// ── JavaScript Generator ──────────────────────────────────────────────────────
+// ── JAVASCRIPT GENERATOR ──────────────────────────────────────────────────────
 
-function generateFullJavaScriptScript(
+function generateFullJavaScriptScriptWithVariables(
   steps: Step[],
-  pref: LocatorPref,
+  variables: Variable[],
+  pref: LocatorPref = "relativeXPath",
 ): string {
   if (!steps.length) return "";
   const pageUrl = steps[0]?.pageUrl || "https://example.com";
+
   const lines: string[] = [
     "// Generated by Automation Recorder",
-    "const { Builder, By, Key, until } = require('selenium-webdriver');",
+    "const { Builder, By, Key, until, Actions } = require('selenium-webdriver');",
     "",
     "(async function testRecording() {",
     "  let driver = await new Builder().forBrowser('chrome').build();",
     "  let vars = {};",
     "  try {",
     `    await driver.get("${escapeJS(pageUrl)}");`,
+    "    await driver.manage().window().setRect({ width: 1366, height: 768 });",
   ];
-  let currentPage = pageUrl;
-  steps.forEach((step, index) => {
-    if (step.pageUrl && step.pageUrl !== currentPage) {
-      lines.push(`    await driver.get("${escapeJS(step.pageUrl)}");`);
-      currentPage = step.pageUrl;
+
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    const stepLine = generateJavaScriptStepWithVariable(
+      step,
+      i,
+      variables,
+      pref,
+    );
+    if (stepLine) {
+      lines.push(stepLine);
     }
-    const stepLine = generateJavaScriptStep(step, pref);
-    if (!stepLine) return;
-    const action = (step.action || step.type || "step").toString();
-    const pageName = step.pageName ? ` [${step.pageName}]` : "";
-    lines.push(`    // Step ${index + 1}: ${action}${pageName}`);
-    stepLine.split("\n").forEach((l) => lines.push(`    ${l}`));
-  });
+  }
+
   lines.push("  } finally {", "    await driver.quit();", "  }", "})();");
   return lines.join("\n");
 }
 
-function generateJavaScriptStep(step: Step, pref: LocatorPref): string | null {
+function generateJavaScriptStepWithVariable(
+  step: Step,
+  index: number,
+  variables: Variable[],
+  pref: LocatorPref,
+): string | null {
   const selector = normalizeSelector(step);
   const preferred = getPreferredLocator(selector, pref);
+
   if (!preferred) return null;
+
   const byMethod =
     preferred.type === "css"
       ? `By.css("${escapeJS(preferred.value)}")`
       : `By.xpath("${escapeJS(preferred.value)}")`;
+
   const action = (step.action || step.type || "").toString().toLowerCase();
-  const rawValue = step.value;
-  if (action === "click" || action === "select" || action === "check")
-    return `await driver.findElement(${byMethod}).click();`;
-  if (action === "input") {
-    const v = rawValue != null ? String(rawValue) : "";
-    return `await driver.findElement(${byMethod}).clear();\nawait driver.findElement(${byMethod}).sendKeys("${escapeJS(v)}");`;
+
+  // Try to find user-named variable for this step
+  const namedVar = findNamedVariable(step, variables);
+  const varName = namedVar?.name || `auto${index + 1}`;
+
+  let line = `    // Step ${index + 1}: ${action} [${step.pageName || "page"}]\n`;
+
+  if (action === "click" || action === "select" || action === "check") {
+    line += `    await driver.findElement(${byMethod}).click();`;
+    if (namedVar) {
+      line += `\n    vars["${varName}"] = await driver.findElement(${byMethod}).getText();`;
+    }
+  } else if (action === "input") {
+    const value = step.value != null ? String(step.value) : "";
+    line += `    await driver.findElement(${byMethod}).click();\n`;
+    line += `    await driver.findElement(${byMethod}).sendKeys("${escapeJS(value)}");\n`;
+    line += `    vars["${varName}"] = await driver.findElement(${byMethod}).getAttribute("value");`;
+  } else if (action === "store_variable") {
+    line += `    vars["${varName}"] = await driver.findElement(${byMethod}).getAttribute("value");`;
+  } else if (action === "submit") {
+    line += `    await driver.findElement(${byMethod}).submit();`;
+  } else if (action === "hover") {
+    line += `    await driver.actions({ async: true }).move({ origin: await driver.findElement(${byMethod}) }).perform();`;
+  } else {
+    line += `    // TODO: handle action "${action}"\n    await driver.findElement(${byMethod});`;
   }
-  if (action === "submit")
-    return `await driver.findElement(${byMethod}).submit();`;
-  return `// TODO: handle action "${action}"\nawait driver.findElement(${byMethod});`;
+
+  return line;
 }
 
-// ── Java Generator ────────────────────────────────────────────────────────────
+// ── JAVA GENERATOR ────────────────────────────────────────────────────────────
 
-function generateFullJavaScript(steps: Step[], pref: LocatorPref): string {
+function generateFullJavaWithVariables(
+  steps: Step[],
+  variables: Variable[],
+  pref: LocatorPref = "relativeXPath",
+): string {
   if (!steps.length) return "";
   const pageUrl = steps[0]?.pageUrl || "https://example.com";
+
   const lines: string[] = [
     "// Generated by Automation Recorder",
-    "import org.openqa.selenium.By;",
-    "import org.openqa.selenium.WebDriver;",
-    "import org.openqa.selenium.WebElement;",
+    "import org.openqa.selenium.*;",
     "import org.openqa.selenium.chrome.ChromeDriver;",
-    "import org.junit.After;",
-    "import org.junit.Before;",
-    "import org.junit.Test;",
-    "import java.util.HashMap;",
-    "import java.util.Map;",
+    "import org.openqa.selenium.interactions.Actions;",
+    "import org.junit.*;",
+    "import java.util.*;",
     "",
-    "public class TestRecording {",
+    "public class RecordingTest {",
     "  private WebDriver driver;",
-    "  private Map<String, Object> vars;",
+    "  private Map<String, String> vars = new HashMap<>();",
     "",
     "  @Before",
     "  public void setUp() {",
     "    driver = new ChromeDriver();",
-    "    vars = new HashMap<>();",
     "  }",
     "",
     "  @After",
@@ -1068,45 +1920,101 @@ function generateFullJavaScript(steps: Step[], pref: LocatorPref): string {
     "  @Test",
     "  public void testRecording() {",
     `    driver.get("${escapeJava(pageUrl)}");`,
+    "    driver.manage().window().setSize(new Dimension(1366, 768));",
   ];
-  let currentPage = pageUrl;
-  steps.forEach((step, index) => {
-    if (step.pageUrl && step.pageUrl !== currentPage) {
-      lines.push(`    driver.get("${escapeJava(step.pageUrl)}");`);
-      currentPage = step.pageUrl;
+
+  for (let i = 0; i < steps.length; i++) {
+    const step = steps[i];
+    const stepLine = generateJavaStepWithVariable(step, i, variables, pref);
+    if (stepLine) {
+      lines.push(stepLine);
     }
-    const stepLine = generateJavaStep(step, pref);
-    if (!stepLine) return;
-    const action = (step.action || step.type || "step").toString();
-    const pageName = step.pageName ? ` [${step.pageName}]` : "";
-    lines.push(`    // Step ${index + 1}: ${action}${pageName}`);
-    stepLine.split("\n").forEach((l) => lines.push(`    ${l}`));
-  });
+  }
+
   lines.push("  }", "}");
   return lines.join("\n");
 }
 
-function generateJavaStep(step: Step, pref: LocatorPref): string | null {
+function generateJavaStepWithVariable(
+  step: Step,
+  index: number,
+  variables: Variable[],
+  pref: LocatorPref,
+): string | null {
   const selector = normalizeSelector(step);
   const preferred = getPreferredLocator(selector, pref);
+
   if (!preferred) return null;
-  const locator =
+
+  const byMethod =
     preferred.type === "css"
       ? `By.cssSelector("${escapeJava(preferred.value)}")`
       : `By.xpath("${escapeJava(preferred.value)}")`;
+
   const action = (step.action || step.type || "").toString().toLowerCase();
-  const rawValue = step.value;
-  if (action === "click" || action === "select" || action === "check")
-    return `driver.findElement(${locator}).click();`;
-  if (action === "input") {
-    const v = rawValue != null ? String(rawValue) : "";
-    return `driver.findElement(${locator}).clear();\ndriver.findElement(${locator}).sendKeys("${escapeJava(v)}");`;
+
+  // Try to find user-named variable for this step
+  const namedVar = findNamedVariable(step, variables);
+  const varName = namedVar?.name || `auto${index + 1}`;
+
+  let line = `    // Step ${index + 1}: ${action} [${step.pageName || "page"}]\n`;
+
+  if (action === "click" || action === "select" || action === "check") {
+    line += `    driver.findElement(${byMethod}).click();`;
+    if (namedVar) {
+      line += `\n    vars.put("${varName}", driver.findElement(${byMethod}).getText());`;
+    }
+  } else if (action === "input") {
+    const value = step.value != null ? String(step.value) : "";
+    line += `    driver.findElement(${byMethod}).click();\n`;
+    line += `    driver.findElement(${byMethod}).sendKeys("${escapeJava(value)}");\n`;
+    line += `    vars.put("${varName}", driver.findElement(${byMethod}).getAttribute("value"));`;
+  } else if (action === "store_variable") {
+    line += `    vars.put("${varName}", driver.findElement(${byMethod}).getAttribute("value"));`;
+  } else if (action === "submit") {
+    line += `    driver.findElement(${byMethod}).submit();`;
+  } else if (action === "hover") {
+    line += `    new Actions(driver).moveToElement(driver.findElement(${byMethod})).perform();`;
+  } else {
+    line += `    // TODO: handle action "${action}"\n    driver.findElement(${byMethod});`;
   }
-  if (action === "submit") return `driver.findElement(${locator}).submit();`;
-  return `// TODO: handle action "${action}"\ndriver.findElement(${locator});`;
+
+  return line;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+function generateStepSeleniumPreview(
+  step: Step,
+  pref: LocatorPref,
+): string | null {
+  const selector = normalizeSelector(step);
+  const preferred = getPreferredLocator(selector, pref);
+  if (!preferred) return null;
+
+  const byMethod =
+    preferred.type === "css"
+      ? `By.cssSelector("${escapeJava(preferred.value)}")`
+      : `By.xpath("${escapeJava(preferred.value)}")`;
+
+  const action = (step.action || step.type || "").toString().toLowerCase();
+  const rawValue = step.value != null ? String(step.value) : "";
+
+  if (action === "click" || action === "select" || action === "check") {
+    return `driver.findElement(${byMethod}).click();`;
+  }
+  if (action === "input") {
+    return `driver.findElement(${byMethod}).sendKeys("${escapeJava(rawValue)}");`;
+  }
+  if (action === "submit") {
+    return `driver.findElement(${byMethod}).submit();`;
+  }
+  if (action === "store_variable") {
+    return `vars.put("...", driver.findElement(${byMethod}).getAttribute("value"));`;
+  }
+
+  return `// TODO: ${action}`;
+}
 
 function buildElementLabel(
   tag?: string,
