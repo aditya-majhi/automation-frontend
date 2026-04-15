@@ -436,6 +436,29 @@ function getLocatorForModel(
   return candidates.length ? candidates[0] : null;
 }
 
+function shouldSkipDuplicateStoreVariableStep(
+  step: Step,
+  index: number,
+  steps: Step[],
+): boolean {
+  const action = (step.action || step.type || "").toLowerCase();
+  if (action !== "store_variable" || index === 0) return false;
+
+  const prev = steps[index - 1];
+  const prevAction = (prev?.action || prev?.type || "").toLowerCase();
+  if (!["input", "select", "check", "click"].includes(prevAction)) return false;
+
+  const prevKey = getStepLocatorKey(prev);
+  const curKey = getStepLocatorKey(step);
+  if (!prevKey || !curKey || prevKey !== curKey) return false;
+
+  const prevVar = String(prev?.variableName || "").trim();
+  const curVar = String(step?.variableName || "").trim();
+
+  if (prevVar && curVar) return prevVar === curVar;
+  return true;
+}
+
 function extractIdFromLocator(
   locatorType: "xpath" | "css",
   locator: string,
@@ -619,6 +642,7 @@ const RecordingDetailsTabs: React.FC<RecordingDetailsTabsProps> = ({
         )}
         {activeTab === "variables" && (
           <VariablesPanel
+            variables={variables}
             inputVars={inputVars}
             outputVars={outputVars}
             buttonVars={buttonVars}
@@ -806,15 +830,16 @@ const LocatorDetails: React.FC<{
 // ── Variables Panel ───────────────────────────────────────────────────────────
 
 const VariablesPanel: React.FC<{
+  variables: Variable[];
   inputVars: Variable[];
   outputVars: Variable[];
   buttonVars: Variable[];
   locatorPref: LocatorPref;
-}> = ({ inputVars, outputVars, buttonVars, locatorPref }) => {
+}> = ({ variables, inputVars, outputVars, buttonVars, locatorPref }) => {
   const [varTab, setVarTab] = useState<"all" | "input" | "output" | "button">(
     "all",
   );
-  const allVars = [...inputVars, ...outputVars, ...buttonVars];
+  // const allVars = [...inputVars, ...outputVars, ...buttonVars];
   const displayVars =
     varTab === "input"
       ? inputVars
@@ -822,9 +847,9 @@ const VariablesPanel: React.FC<{
         ? outputVars
         : varTab === "button"
           ? buttonVars
-          : allVars;
+          : variables;
 
-  if (!allVars.length)
+  if (!variables.length)
     return <div style={styles.empty}>No variables recorded yet.</div>;
 
   return (
@@ -833,7 +858,7 @@ const VariablesPanel: React.FC<{
         {(["all", "input", "output", "button"] as const).map((t) => {
           const count =
             t === "all"
-              ? allVars.length
+              ? variables.length
               : t === "input"
                 ? inputVars.length
                 : t === "output"
@@ -1441,7 +1466,6 @@ function generateFullPythonScriptWithVariables(
 ): string {
   if (!rawSteps.length) return "";
 
-  // Strict mode: do not compress or remove any recorded steps.
   const steps = rawSteps;
   const pageUrl = steps[0]?.pageUrl || "https://example.com";
 
@@ -1452,12 +1476,9 @@ function generateFullPythonScriptWithVariables(
     "from selenium import webdriver",
     "from selenium.webdriver.common.by import By",
     "from selenium.webdriver.common.action_chains import ActionChains",
-    "from selenium.webdriver.support import expected_conditions as EC",
-    "from selenium.webdriver.support.wait import WebDriverWait",
     "from selenium.webdriver.support.ui import Select",
     "from selenium.webdriver.firefox.service import Service",
     "from selenium.webdriver.firefox.options import Options as FirefoxOptions",
-    "from selenium.common.exceptions import TimeoutException",
     "from webdriver_manager.firefox import GeckoDriverManager",
     "",
     "class TestRecording():",
@@ -1470,94 +1491,20 @@ function generateFullPythonScriptWithVariables(
     "    self.driver = webdriver.Firefox(service=service, options=options)",
     "    self.vars = {}",
     "",
-    "    self._last_action_sig = None",
-    "",
-    "  def set_var(self, key, value):",
-    "    # keep latest value for assertions",
-    "    self.vars[key] = value",
-    "    # also keep history to avoid losing earlier captures",
-    "    hist = self.vars.get('__history__')",
-    "    if not isinstance(hist, dict):",
-    "      hist = {}",
-    "      self.vars['__history__'] = hist",
-    "    arr = hist.get(key)",
-    "    if not isinstance(arr, list):",
-    "      arr = []",
-    "      hist[key] = arr",
-    "    arr.append(value)",
-    "",
     "  def teardown_method(self, method):",
     "    self.driver.quit()",
-    "",
-    "  def wait_click(self, by, locator, timeout=20):",
-    "    el = WebDriverWait(self.driver, timeout).until(EC.element_to_be_clickable((by, locator)))",
-    "    self.driver.execute_script(\"arguments[0].scrollIntoView({block:'center'});\", el)",
-    "    try:",
-    "      el.click()",
-    "    except Exception:",
-    "      self.driver.execute_script('arguments[0].click();', el)",
-    "    return el",
-    "",
-    "  def wait_click_any(self, candidates, timeout=20, max_matches=3):",
-    "    last_err = None",
-    "    for by_name, locator in candidates:",
-    "      by = By.XPATH if by_name == 'xpath' else By.CSS_SELECTOR",
-    "      try:",
-    "        elements = self.driver.find_elements(by, locator)",
-    "        visible = [e for e in elements if e.is_displayed() and e.is_enabled()]",
-    "        if len(visible) == 0:",
-    "          continue",
-    "        if len(visible) > max_matches:",
-    "          continue",
-    "        el = visible[0]",
-    "        self.driver.execute_script(\"arguments[0].scrollIntoView({block:'center'});\", el)",
-    "        try:",
-    "          el.click()",
-    "        except Exception:",
-    "          self.driver.execute_script('arguments[0].click();', el)",
-    "        return el",
-    "      except Exception as e:",
-    "        last_err = e",
-    "    raise last_err if last_err else TimeoutException('No locator candidates worked')",
-    "",
-    "  def wait_visible(self, by, locator, timeout=20):",
-    "    return WebDriverWait(self.driver, timeout).until(EC.visibility_of_element_located((by, locator)))",
-    "",
-    "  def wait_any_visible(self, candidates, timeout=25):",
-    "    last_err = None",
-    "    for by_name, locator in candidates:",
-    "      by = By.XPATH if by_name == 'xpath' else By.CSS_SELECTOR",
-    "      try:",
-    "        return WebDriverWait(self.driver, timeout).until(EC.visibility_of_element_located((by, locator)))",
-    "      except Exception as e:",
-    "        last_err = e",
-    "    raise last_err if last_err else TimeoutException('No visibility candidate matched')",
-    "",
-    "  def wait_input(self, by, locator, value, timeout=20):",
-    "    el = self.wait_visible(by, locator, timeout)",
-    "    self.driver.execute_script(\"arguments[0].scrollIntoView({block:'center'});\", el)",
-    "    el.clear()",
-    "    el.send_keys(value)",
-    "    return el",
-    "",
-    "  def wait_select_visible_text(self, by, locator, text, timeout=20):",
-    "    el = self.wait_visible(by, locator, timeout)",
-    "    Select(el).select_by_visible_text(text)",
-    "    return el",
-    "",
-    "  def wait_nav(self, timeout=25):",
-    "    WebDriverWait(self.driver, timeout).until(lambda d: d.execute_script('return document.readyState') == 'complete')",
-    "    time.sleep(1.5)",
     "",
     "  def test_recording(self):",
     `    self.driver.get("${escapePy(pageUrl)}")`,
     "    self.driver.set_window_size(1366, 768)",
-    "    self.wait_nav()",
   ];
 
   steps.forEach((step, index) => {
+    if (shouldSkipDuplicateStoreVariableStep(step, index, steps)) return;
+
     const prev = index > 0 ? steps[index - 1] : undefined;
     const next = index < steps.length - 1 ? steps[index + 1] : undefined;
+
     const stepLines = generatePythonStepWithVariable(
       step,
       index,
@@ -1565,6 +1512,7 @@ function generateFullPythonScriptWithVariables(
       prev,
       next,
     );
+
     if (stepLines?.length) lines.push(...stepLines);
   });
 
@@ -1575,11 +1523,12 @@ function generatePythonStepWithVariable(
   step: Step,
   index: number,
   variables: Variable[],
-  prevStep?: Step,
-  nextStep?: Step,
+  _prevStep?: Step,
+  _nextStep?: Step,
 ): string[] | null {
   const action = (step.action || step.type || "").toLowerCase();
   const lines: string[] = [];
+
   lines.push(
     "# Step " +
       (index + 1) +
@@ -1590,12 +1539,8 @@ function generatePythonStepWithVariable(
       "]",
   );
 
+  // Keep existing locator pipeline behavior via toActionModel/getLocatorForModel.
   const model = toActionModel(step);
-  const candidates = getLocatorCandidates(step);
-  const pyCandidates =
-    candidates.length > 0 ? toPyCandidateLiteral(candidates) : null;
-
-  // Keep step order even if model cannot be formed.
   if (!model) {
     lines.push("    # Preserved step: no actionable locator/model generated");
     return lines;
@@ -1612,118 +1557,43 @@ function generatePythonStepWithVariable(
       ? 'By.XPATH, "' + escapePy(model.locator) + '"'
       : 'By.CSS_SELECTOR, "' + escapePy(model.locator) + '"';
 
-  const prevAction = (prevStep?.action || prevStep?.type || "").toLowerCase();
-  const sameLocatorAsPrev =
-    getStepLocatorKey(prevStep) === getStepLocatorKey(step);
-  const samePageAsPrev =
-    normalize(prevStep?.pageName || prevStep?.pageUrl || "") ===
-    normalize(step.pageName || step.pageUrl || "");
-
-  // Reduce duplicate click/submit/hover flakiness but keep step marker.
-  const isRapidDuplicateInteraction =
-    (action === "click" || action === "submit" || action === "hover") &&
-    prevAction === action &&
-    sameLocatorAsPrev &&
-    samePageAsPrev;
-
-  if (isRapidDuplicateInteraction) {
-    lines.push(
-      "    # Preserved step: duplicate interaction skipped for stability",
-    );
+  if (action === "click") {
+    lines.push("    el = self.driver.find_element(" + byExpr + ")");
+    lines.push("    el.click()");
     return lines;
   }
 
-  const prevPage = normalize(prevStep?.pageName || prevStep?.pageUrl || "");
-  const currPage = normalize(step.pageName || step.pageUrl || "");
-  const pageChanged = !!prevPage && !!currPage && prevPage !== currPage;
-  const cameFromNavigation = !!prevStep && isLikelyNavigationStep(prevStep);
-  const shouldEnsureContext = cameFromNavigation || pageChanged;
-
-  if (action === "click" || action === "submit") {
-    const inputType = (step.inputType || "").toLowerCase();
-    const isChoice = inputType === "checkbox" || inputType === "radio";
-
-    if (isChoice) {
-      const elementId = extractIdFromLocator(model.locatorType, model.locator);
-      if (elementId) {
-        lines.push(
-          "    self.wait_click(By.CSS_SELECTOR, \"label[for='" +
-            escapePy(elementId) +
-            "']\", timeout=25)",
-        );
-      } else if (pyCandidates && candidates.length > 1) {
-        lines.push("    self.wait_click_any(" + pyCandidates + ", timeout=25)");
-      } else {
-        lines.push("    self.wait_click(" + byExpr + ", timeout=25)");
-      }
-    } else if (pyCandidates && candidates.length > 1) {
-      const timeout = model.expectsNavigation ? 25 : 20;
-      lines.push(
-        "    self.wait_click_any(" +
-          pyCandidates +
-          ", timeout=" +
-          timeout +
-          ")",
-      );
-    } else {
-      lines.push("    self.wait_click(" + byExpr + ", timeout=25)");
-    }
-
-    if (model.expectsNavigation) {
-      lines.push("    self.wait_nav()");
-      lines.push("    time.sleep(0.5)");
-
-      const nextCandidates = buildNextStepVisibilityCandidates(nextStep);
-      if (nextCandidates.length > 0) {
-        lines.push("    try:");
-        lines.push(
-          "      self.wait_any_visible(" +
-            toPyCandidateLiteral(nextCandidates) +
-            ", timeout=15)",
-        );
-        lines.push("    except Exception:");
-        lines.push("      pass");
-      }
-    }
-
+  if (action === "submit") {
+    lines.push("    self.driver.find_element(" + byExpr + ").submit()");
     return lines;
   }
 
   if (action === "input") {
     const value = step.value != null ? String(step.value) : "";
 
-    if (shouldEnsureContext) {
-      lines.push(
-        "    time.sleep(0.5)  # Wait for post-navigation form rendering",
-      );
-    }
+    lines.push("    el = self.driver.find_element(" + byExpr + ")");
 
     if (isNativeSelectStep(step)) {
       lines.push(
-        "    self.wait_select_visible_text(" +
-          byExpr +
-          ', "' +
+        '    Select(el).select_by_visible_text("' + escapePy(value) + '")',
+      );
+      lines.push(
+        '    self.vars["' +
+          varName +
+          '"] = str("' +
           escapePy(value) +
-          '", timeout=30)',
+          '").strip()',
       );
     } else {
+      lines.push("    el.clear()");
+      lines.push('    el.send_keys("' + escapePy(value) + '")');
       lines.push(
-        "    self.wait_input(" +
-          byExpr +
-          ', "' +
-          escapePy(value) +
-          '", timeout=30)',
-      );
-      lines.push(
-        '    self.set_var("' +
+        '    self.vars["' +
           varName +
-          '", self.wait_visible(' +
-          byExpr +
-          ', timeout=30).get_attribute("value"))',
+          '"] = str(el.get_attribute("value") or "").strip()',
       );
     }
 
-    if (isLikelyNavigationStep(step)) lines.push("    self.wait_nav()");
     return lines;
   }
 
@@ -1734,64 +1604,51 @@ function generatePythonStepWithVariable(
       tag === "input" || tag === "textarea" || tag === "select";
     const isChoice = type === "checkbox" || type === "radio";
 
+    lines.push("    el = self.driver.find_element(" + byExpr + ")");
+
     if (isChoice) {
       lines.push(
-        '    self.set_var("' +
-          varName +
-          '", str(self.wait_visible(' +
-          byExpr +
-          ", timeout=30).is_selected()))",
+        '    self.vars["' + varName + '"] = str(el.is_selected()).strip()',
       );
     } else if (isInputLike) {
       lines.push(
-        '    self.set_var("' +
+        '    self.vars["' +
           varName +
-          '", self.wait_visible(' +
-          byExpr +
-          ', timeout=30).get_attribute("value"))',
+          '"] = str(el.get_attribute("value") or "").strip()',
       );
     } else {
       lines.push(
-        '    self.set_var("' +
-          varName +
-          '", self.wait_visible(' +
-          byExpr +
-          ", timeout=30).text)",
+        '    self.vars["' + varName + '"] = str(el.text or "").strip()',
       );
     }
+
     return lines;
   }
 
   if (action === "check") {
-    lines.push("    el = self.wait_visible(" + byExpr + ", timeout=25)");
+    lines.push("    el = self.driver.find_element(" + byExpr + ")");
     lines.push("    if not el.is_selected():");
-    lines.push("      self.wait_click(" + byExpr + ", timeout=25)");
+    lines.push("      el.click()");
     return lines;
   }
 
   if (action === "select") {
     if (isNativeSelectStep(step) && step.value != null) {
+      lines.push("    el = self.driver.find_element(" + byExpr + ")");
       lines.push(
-        "    self.wait_select_visible_text(" +
-          byExpr +
-          ', "' +
+        '    Select(el).select_by_visible_text("' +
           escapePy(String(step.value)) +
-          '", timeout=25)',
+          '")',
       );
-    } else if (pyCandidates && candidates.length > 1) {
-      lines.push("    self.wait_click_any(" + pyCandidates + ", timeout=25)");
     } else {
-      lines.push("    self.wait_click(" + byExpr + ", timeout=25)");
+      lines.push("    self.driver.find_element(" + byExpr + ").click()");
     }
     return lines;
   }
 
   if (action === "hover") {
-    lines.push(
-      "    ActionChains(self.driver).move_to_element(self.wait_visible(" +
-        byExpr +
-        ", timeout=25)).perform()",
-    );
+    lines.push("    el = self.driver.find_element(" + byExpr + ")");
+    lines.push("    ActionChains(self.driver).move_to_element(el).perform()");
     return lines;
   }
 

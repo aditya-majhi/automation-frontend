@@ -51,6 +51,18 @@ const ModuleDetailPage = () => {
     }
   };
 
+  const handleDeleteTestCase = async (id: string) => {
+    if (!window.confirm("Delete this test case?")) return;
+
+    try {
+      setError("");
+      await testCaseService.delete(id);
+      await fetchTestCases();
+    } catch {
+      setError("Failed to delete test case");
+    }
+  };
+
   return (
     <div style={styles.page}>
       <button style={styles.back} onClick={() => navigate(-1)}>
@@ -77,6 +89,7 @@ const ModuleDetailPage = () => {
             subtitle={
               tc.description || new Date(tc.createdAt).toLocaleDateString()
             }
+            onDelete={() => handleDeleteTestCase(tc.id)}
             onClick={() => navigate(`/testcases/${tc.id}`)}
           />
         ))

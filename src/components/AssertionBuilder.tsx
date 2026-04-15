@@ -1,5 +1,4 @@
 import { useMemo, useState } from "react";
-import Select, { type StylesConfig } from "react-select";
 
 type AssertionVariable = {
   name: string;
@@ -15,7 +14,7 @@ type Row = {
   operator: string;
   right_type: "constant" | "variable";
   right_constant: string;
-  right_variables: string[];
+  right_variable: string;
   connector: "AND" | "OR";
 };
 
@@ -39,7 +38,7 @@ type AssertionsPanelProps = {
             left: string;
             operator: string;
             right_type: "constant" | "variable";
-            right_value: string | string[];
+            right_value: string;
           }>;
         };
       },
@@ -67,77 +66,6 @@ const DEFAULT_OPERATORS = [
 
 const CONNECTOR_OPTIONS: ("AND" | "OR")[] = ["AND", "OR"];
 
-type SelectOption = { value: string; label: string };
-
-const rightValueSelectStyles: StylesConfig<SelectOption, true> = {
-  control: (base, state) => ({
-    ...base,
-    backgroundColor: "#11111b",
-    borderColor: state.isFocused ? "#89b4fa" : "#45475a",
-    boxShadow: "none",
-    minHeight: 36,
-    borderRadius: 8,
-    "&:hover": { borderColor: "#89b4fa" },
-  }),
-  menu: (base) => ({
-    ...base,
-    backgroundColor: "#1e1e2e",
-    border: "1px solid #45475a",
-    zIndex: 30,
-  }),
-  menuList: (base) => ({
-    ...base,
-    backgroundColor: "#1e1e2e",
-  }),
-  option: (base, state) => ({
-    ...base,
-    backgroundColor: state.isSelected
-      ? "#89b4fa33"
-      : state.isFocused
-        ? "#313244"
-        : "#1e1e2e",
-    color: "#cdd6f4",
-    cursor: "pointer",
-  }),
-  placeholder: (base) => ({
-    ...base,
-    color: "#6c7086",
-  }),
-  input: (base) => ({
-    ...base,
-    color: "#cdd6f4",
-  }),
-  multiValue: (base) => ({
-    ...base,
-    backgroundColor: "#313244",
-    border: "1px solid #45475a",
-  }),
-  multiValueLabel: (base) => ({
-    ...base,
-    color: "#cdd6f4",
-  }),
-  multiValueRemove: (base) => ({
-    ...base,
-    color: "#f38ba8",
-    ":hover": {
-      backgroundColor: "#f38ba820",
-      color: "#f38ba8",
-    },
-  }),
-  indicatorSeparator: (base) => ({
-    ...base,
-    backgroundColor: "#45475a",
-  }),
-  dropdownIndicator: (base) => ({
-    ...base,
-    color: "#a6adc8",
-  }),
-  clearIndicator: (base) => ({
-    ...base,
-    color: "#a6adc8",
-  }),
-};
-
 const unwrap = <T,>(res: any, fallback: T): T => {
   if (res == null) return fallback;
   if (Array.isArray(res)) return res as T;
@@ -160,7 +88,7 @@ const normalizeIncomingVariables = (input: any[]): AssertionVariable[] => {
         label: String(v?.label || v?.fieldName || name || ""),
       };
     })
-    .filter((v) => v.name.length > 0);
+    .filter((v) => v.name.length > 0 && v.kind.toLowerCase() !== "button");
 };
 
 function buildLogicFromRows(rows: Row[]): string {
@@ -172,7 +100,6 @@ function buildLogicFromRows(rows: Row[]): string {
     .join(" ");
 }
 
-//Helpers
 const encodeVar = (name: string, pageName?: string | null) =>
   `${name}__${pageName || "global"}`;
 
@@ -195,7 +122,7 @@ export default function AssertionsPanel({
       operator: "==",
       right_type: "constant",
       right_constant: "",
-      right_variables: [],
+      right_variable: "",
       connector: "AND",
     },
   ]);
@@ -219,7 +146,6 @@ export default function AssertionsPanel({
   const openModal = async () => {
     setErrorText("");
     setIsOpen(true);
-    // Fetch operators in background — UI already shows defaults
     try {
       const opsRes = await api.getAssertionOperators();
       const opsPayload = unwrap<{ operators?: string[] }>(opsRes, {});
@@ -228,7 +154,7 @@ export default function AssertionsPanel({
         setOperators(fetched);
       }
     } catch {
-      // keep DEFAULT_OPERATORS already in state
+      //
     }
   };
 
@@ -252,7 +178,7 @@ export default function AssertionsPanel({
           operator: operators[0] || "==",
           right_type: "constant",
           right_constant: "",
-          right_variables: [],
+          right_variable: "",
           connector: "AND",
         },
       ];
@@ -262,7 +188,7 @@ export default function AssertionsPanel({
   const removeRow = (id: number) => {
     setRows((prev) => {
       const next = prev.filter((r) => r.id !== id);
-      return next.length ? next : prev; // keep at least 1
+      return next.length ? next : prev;
     });
   };
 
@@ -282,7 +208,7 @@ export default function AssertionsPanel({
         r.operator &&
         (r.right_type === "constant"
           ? r.right_constant.trim().length > 0
-          : r.right_variables.length > 0),
+          : r.right_variable.trim().length > 0),
     );
 
     if (!validRows.length) {
@@ -302,7 +228,7 @@ export default function AssertionsPanel({
       right_type: r.right_type,
       right_value:
         r.right_type === "variable"
-          ? r.right_variables.map(decodeVarName)
+          ? decodeVarName(r.right_variable)
           : r.right_constant,
     }));
 
@@ -338,7 +264,6 @@ export default function AssertionsPanel({
             </div>
 
             <div style={styles.body}>
-              {/* Column headers */}
               <div style={styles.headRow}>
                 <div style={styles.headNum} />
                 <div style={styles.headCell}>Variable</div>
@@ -350,12 +275,9 @@ export default function AssertionsPanel({
 
               {rows.map((row, idx) => (
                 <div key={row.id}>
-                  {/* Rule row */}
                   <div style={styles.row}>
-                    {/* Row number */}
                     <div style={styles.rowNum}>{row.id}.</div>
 
-                    {/* Left variable */}
                     <select
                       value={row.left}
                       onChange={(e) =>
@@ -371,7 +293,6 @@ export default function AssertionsPanel({
                       ))}
                     </select>
 
-                    {/* Operator */}
                     <select
                       value={row.operator}
                       onChange={(e) =>
@@ -386,14 +307,13 @@ export default function AssertionsPanel({
                       ))}
                     </select>
 
-                    {/* right_type */}
                     <select
                       value={row.right_type}
                       onChange={(e) =>
                         updateRow(row.id, {
                           right_type: e.target.value as "constant" | "variable",
                           right_constant: "",
-                          right_variables: [],
+                          right_variable: "",
                         })
                       }
                       style={styles.inputSm}
@@ -402,7 +322,6 @@ export default function AssertionsPanel({
                       <option value="variable">variable</option>
                     </select>
 
-                    {/* right value */}
                     {row.right_type === "constant" ? (
                       <input
                         value={row.right_constant}
@@ -413,30 +332,22 @@ export default function AssertionsPanel({
                         style={styles.input}
                       />
                     ) : (
-                      <Select<SelectOption, true>
-                        isMulti
-                        closeMenuOnSelect={false}
-                        hideSelectedOptions={false}
-                        placeholder="Select one or more variables"
-                        options={variableOptions}
-                        value={variableOptions
-                          .filter((option) =>
-                            row.right_variables.includes(option.value),
-                          )
-                          .map((option) => ({
-                            value: option.value,
-                            label: option.label,
-                          }))}
-                        onChange={(vals) =>
-                          updateRow(row.id, {
-                            right_variables: (vals || []).map((v) => v.value),
-                          })
+                      <select
+                        value={row.right_variable}
+                        onChange={(e) =>
+                          updateRow(row.id, { right_variable: e.target.value })
                         }
-                        styles={rightValueSelectStyles}
-                      />
+                        style={styles.input}
+                      >
+                        <option value="">Select variable</option>
+                        {variableOptions.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
                     )}
 
-                    {/* Delete */}
                     <button
                       type="button"
                       onClick={() => removeRow(row.id)}
@@ -447,7 +358,6 @@ export default function AssertionsPanel({
                     </button>
                   </div>
 
-                  {/* Connector between rows */}
                   {idx < rows.length - 1 && (
                     <div style={styles.connectorRow}>
                       <select
@@ -597,16 +507,6 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 8,
     padding: "8px 8px",
     fontSize: 12,
-  },
-  multiSelect: {
-    width: "100%",
-    backgroundColor: "#11111b",
-    border: "1px solid #45475a",
-    color: "#cdd6f4",
-    borderRadius: 8,
-    padding: "4px 6px",
-    fontSize: 12,
-    minHeight: 80,
   },
   deleteBtn: {
     background: "#f38ba820",

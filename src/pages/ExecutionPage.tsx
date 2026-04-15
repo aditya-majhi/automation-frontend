@@ -7,8 +7,13 @@ import {
 } from "../api/services";
 
 type Project = { id: string; name: string };
-type Module = { id: string; name: string };
-type TestCase = { id: string; name: string };
+type Module = { id: string; name: string; projectId?: string };
+type TestCase = {
+  id: string;
+  name: string;
+  moduleId?: string;
+  assertions?: unknown;
+};
 
 const STATUS_COLORS: Record<string, string> = {
   completed: "#a6e3a1",
@@ -19,25 +24,83 @@ const STATUS_COLORS: Record<string, string> = {
   pending: "#89dceb",
 };
 
+// helper to render the assertions in the test case cards
+function renderAssertions(assertionsJson: unknown) {
+  if (!assertionsJson || typeof assertionsJson !== "object") return null;
+  const a = assertionsJson as { logic?: string; rules?: any[] };
+  const rules = Array.isArray(a.rules) ? a.rules : [];
+  if (!rules.length) return null;
+
+  const rightText = (r: any) => {
+    if (r.operator === "is_empty" || r.operator === "is_not_empty") return "";
+    if (r.right_type === "variable") {
+      if (Array.isArray(r.right_value)) return r.right_value.join(", ");
+      return String(r.right_value ?? "");
+    }
+    if (Array.isArray(r.right_value))
+      return r.right_value.map(String).join(", ");
+    return JSON.stringify(r.right_value ?? "");
+  };
+
+  return (
+    <div
+      style={{ marginTop: 8, marginBottom: 10, fontSize: 12, color: "#a6adc8" }}
+    >
+      <strong>Assertions:</strong>
+      <ol style={{ margin: "6px 0 0 16px", padding: 0 }}>
+        {rules.map((r: any, idx: number) => {
+          const left = String(r.left ?? "");
+          const op = String(r.operator ?? "");
+          const right = rightText(r);
+          return (
+            <li key={r.id ?? idx}>
+              {right ? `${left} ${op} ${right}` : `${left} ${op}`}
+            </li>
+          );
+        })}
+      </ol>
+      {a.logic && (
+        <div style={{ marginTop: 2 }}>
+          <em>Logic: {a.logic}</em>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const uniqueById = <T extends { id: string }>(items: T[]): T[] => {
+  const map = new Map<string, T>();
+  for (const item of items) map.set(item.id, item);
+  return Array.from(map.values());
+};
+
 export default function ExecutionPage() {
   const [projects, setProjects] = useState<Project[]>([]);
-  const [modules, setModules] = useState<Module[]>([]);
-  const [testCases, setTestCases] = useState<TestCase[]>([]);
-  const [selectedProjectId, setSelectedProjectId] = useState("");
-  const [selectedModuleId, setSelectedModuleId] = useState("");
+  const [modulesByProject, setModulesByProject] = useState<
+    Record<string, Module[]>
+  >({});
+  const [testCasesByModule, setTestCasesByModule] = useState<
+    Record<string, TestCase[]>
+  >({});
+
+  const [selectedProjectIds, setSelectedProjectIds] = useState<string[]>([]);
+  const [selectedModuleIds, setSelectedModuleIds] = useState<string[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [expandedProjectIds, setExpandedProjectIds] = useState<string[]>([]);
+  const [expandedModuleIds, setExpandedModuleIds] = useState<string[]>([]);
+
   const [filesByTc, setFilesByTc] = useState<Record<string, File | null>>({});
   const [templatesGenerated, setTemplatesGenerated] = useState(false);
+
   const [executionId, setExecutionId] = useState("");
   const [statusData, setStatusData] = useState<any>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [showRawJson, setShowRawJson] = useState(false);
 
-  // Polling state
   const [pollCount, setPollCount] = useState(0);
   const [isPolling, setIsPolling] = useState(false);
-  const [lastPolledAt, setLastPolledAt] = useState<string>("");
+  const [lastPolledAt, setLastPolledAt] = useState("");
 
   useEffect(() => {
     projectService
@@ -47,32 +110,58 @@ export default function ExecutionPage() {
   }, []);
 
   useEffect(() => {
-    if (!selectedProjectId) {
-      setModules([]);
-      setTestCases([]);
-      setSelectedModuleId("");
-      setSelectedIds([]);
-      setFilesByTc({});
-      return;
-    }
-    moduleService
-      .getByProject(selectedProjectId)
-      .then(setModules)
+    const missingProjectIds = expandedProjectIds.filter(
+      (projectId) => !modulesByProject[projectId],
+    );
+    if (!missingProjectIds.length) return;
+
+    Promise.all(
+      missingProjectIds.map(async (projectId) => {
+        const modules = await moduleService.getByProject(projectId);
+        return [
+          projectId,
+          uniqueById(modules).map((m) => ({ ...m, projectId })),
+        ] as const;
+      }),
+    )
+      .then((pairs) => {
+        setModulesByProject((prev) => {
+          const next = { ...prev };
+          pairs.forEach(([projectId, modules]) => {
+            next[projectId] = modules;
+          });
+          return next;
+        });
+      })
       .catch(() => setError("Failed to load modules"));
-  }, [selectedProjectId]);
+  }, [expandedProjectIds, modulesByProject]);
 
   useEffect(() => {
-    if (!selectedModuleId) {
-      setTestCases([]);
-      setSelectedIds([]);
-      setFilesByTc({});
-      return;
-    }
-    testCaseService
-      .getByModule(selectedModuleId)
-      .then(setTestCases)
+    const missingModuleIds = expandedModuleIds.filter(
+      (moduleId) => !testCasesByModule[moduleId],
+    );
+    if (!missingModuleIds.length) return;
+
+    Promise.all(
+      missingModuleIds.map(async (moduleId) => {
+        const testCases = await testCaseService.getByModule(moduleId);
+        return [
+          moduleId,
+          uniqueById(testCases).map((tc) => ({ ...tc, moduleId })),
+        ] as const;
+      }),
+    )
+      .then((pairs) => {
+        setTestCasesByModule((prev) => {
+          const next = { ...prev };
+          pairs.forEach(([moduleId, testCases]) => {
+            next[moduleId] = testCases;
+          });
+          return next;
+        });
+      })
       .catch(() => setError("Failed to load test cases"));
-  }, [selectedModuleId]);
+  }, [expandedModuleIds, testCasesByModule]);
 
   const getNormalizedStatus = (raw: any): string => {
     const value =
@@ -99,7 +188,6 @@ export default function ExecutionPage() {
         const currentStatus = String(
           raw?.status || raw?.data?.status || "",
         ).toLowerCase();
-
         const isTerminal =
           currentStatus === "completed" ||
           currentStatus === "failed" ||
@@ -118,11 +206,14 @@ export default function ExecutionPage() {
     return () => clearInterval(timer);
   }, [executionId]);
 
-  const currentExecutionStatus = getNormalizedStatus(statusData) || "queued";
+  const allTestCases = useMemo(
+    () => Object.values(testCasesByModule).flat(),
+    [testCasesByModule],
+  );
 
   const selectedCases = useMemo(
-    () => testCases.filter((tc) => selectedIds.includes(tc.id)),
-    [testCases, selectedIds],
+    () => allTestCases.filter((tc) => selectedIds.includes(tc.id)),
+    [allTestCases, selectedIds],
   );
 
   const uploadedCount = selectedCases.filter((tc) =>
@@ -133,14 +224,191 @@ export default function ExecutionPage() {
     selectedCases.length > 0 &&
     selectedCases.every((tc) => Boolean(filesByTc[tc.id]));
 
-  const toggleSelect = (id: string) => {
+  const removeFilesForTestCases = (testCaseIds: string[]) => {
+    if (!testCaseIds.length) return;
+    setFilesByTc((cur) => {
+      const next = { ...cur };
+      testCaseIds.forEach((id) => delete next[id]);
+      return next;
+    });
+  };
+
+  const ensureModulesLoaded = async (projectId: string): Promise<Module[]> => {
+    const existing = modulesByProject[projectId];
+    if (existing) return existing;
+
+    const fetched = await moduleService.getByProject(projectId);
+    const normalized = uniqueById(fetched).map((m) => ({ ...m, projectId }));
+    setModulesByProject((prev) => ({ ...prev, [projectId]: normalized }));
+    return normalized;
+  };
+
+  const ensureTestCasesLoaded = async (
+    moduleId: string,
+  ): Promise<TestCase[]> => {
+    const existing = testCasesByModule[moduleId];
+    if (existing) return existing;
+
+    const fetched = await testCaseService.getByModule(moduleId);
+    const normalized = uniqueById(fetched).map((tc) => ({ ...tc, moduleId }));
+    setTestCasesByModule((prev) => ({ ...prev, [moduleId]: normalized }));
+    return normalized;
+  };
+
+  const findProjectIdForModule = (moduleId: string): string | undefined => {
+    for (const [projectId, modules] of Object.entries(modulesByProject)) {
+      if (modules.some((m) => m.id === moduleId)) return projectId;
+    }
+    return undefined;
+  };
+
+  const toggleProjectExpand = (projectId: string) => {
+    setExpandedProjectIds((prev) =>
+      prev.includes(projectId)
+        ? prev.filter((id) => id !== projectId)
+        : [...prev, projectId],
+    );
+  };
+
+  const toggleModuleExpand = (moduleId: string) => {
+    setExpandedModuleIds((prev) =>
+      prev.includes(moduleId)
+        ? prev.filter((id) => id !== moduleId)
+        : [...prev, moduleId],
+    );
+  };
+
+  const toggleProject = async (projectId: string) => {
+    const isSelected = selectedProjectIds.includes(projectId);
+
+    if (!isSelected) {
+      try {
+        setError("");
+
+        const modules = await ensureModulesLoaded(projectId);
+        const moduleIds = modules.map((m) => m.id);
+
+        const tcLists = await Promise.all(
+          moduleIds.map((moduleId) => ensureTestCasesLoaded(moduleId)),
+        );
+        const testCaseIds = tcLists.flatMap((list) => list.map((tc) => tc.id));
+
+        setSelectedProjectIds((prev) =>
+          Array.from(new Set([...prev, projectId])),
+        );
+        setSelectedModuleIds((prev) =>
+          Array.from(new Set([...prev, ...moduleIds])),
+        );
+        setSelectedIds((prev) =>
+          Array.from(new Set([...prev, ...testCaseIds])),
+        );
+
+        setExpandedProjectIds((prev) =>
+          prev.includes(projectId) ? prev : [...prev, projectId],
+        );
+        setExpandedModuleIds((prev) =>
+          Array.from(new Set([...prev, ...moduleIds])),
+        );
+
+        setTemplatesGenerated(false);
+        return;
+      } catch {
+        setError("Failed to select full project scope");
+        return;
+      }
+    }
+
+    const modules = modulesByProject[projectId] || [];
+    const moduleIds = modules.map((m) => m.id);
+    const testCaseIds = moduleIds.flatMap((mId) =>
+      (testCasesByModule[mId] || []).map((tc) => tc.id),
+    );
+
+    setSelectedProjectIds((prev) => prev.filter((id) => id !== projectId));
+    setSelectedModuleIds((prev) =>
+      prev.filter((id) => !moduleIds.includes(id)),
+    );
+    setSelectedIds((prev) => prev.filter((id) => !testCaseIds.includes(id)));
+    removeFilesForTestCases(testCaseIds);
+    setTemplatesGenerated(false);
+  };
+
+  const toggleModule = async (moduleId: string) => {
+    const isSelected = selectedModuleIds.includes(moduleId);
+    const parentProjectId = findProjectIdForModule(moduleId);
+
+    if (!isSelected) {
+      try {
+        setError("");
+
+        const moduleCases = await ensureTestCasesLoaded(moduleId);
+        const testCaseIds = moduleCases.map((tc) => tc.id);
+
+        setSelectedModuleIds((prev) =>
+          Array.from(new Set([...prev, moduleId])),
+        );
+        setSelectedIds((prev) =>
+          Array.from(new Set([...prev, ...testCaseIds])),
+        );
+
+        if (parentProjectId) {
+          setSelectedProjectIds((prev) =>
+            Array.from(new Set([...prev, parentProjectId])),
+          );
+        }
+
+        setExpandedModuleIds((prev) =>
+          prev.includes(moduleId) ? prev : [...prev, moduleId],
+        );
+
+        setTemplatesGenerated(false);
+        return;
+      } catch {
+        setError("Failed to select full module scope");
+        return;
+      }
+    }
+
+    const removedTestCaseIds = (testCasesByModule[moduleId] || []).map(
+      (tc) => tc.id,
+    );
+
+    setSelectedModuleIds((prev) => prev.filter((id) => id !== moduleId));
+    setSelectedIds((prev) =>
+      prev.filter((id) => !removedTestCaseIds.includes(id)),
+    );
+    removeFilesForTestCases(removedTestCaseIds);
+
+    if (parentProjectId) {
+      const siblingModuleIds = (modulesByProject[parentProjectId] || [])
+        .map((m) => m.id)
+        .filter((id) => id !== moduleId);
+
+      const hasAnySelectedSibling = siblingModuleIds.some((id) =>
+        selectedModuleIds.includes(id),
+      );
+
+      if (!hasAnySelectedSibling) {
+        setSelectedProjectIds((prev) =>
+          prev.filter((id) => id !== parentProjectId),
+        );
+      }
+    }
+
+    setTemplatesGenerated(false);
+  };
+
+  const toggleTestCase = (testCaseId: string) => {
     setSelectedIds((prev) => {
-      const exists = prev.includes(id);
-      const next = exists ? prev.filter((v) => v !== id) : [...prev, id];
+      const exists = prev.includes(testCaseId);
+      const next = exists
+        ? prev.filter((v) => v !== testCaseId)
+        : [...prev, testCaseId];
+
       if (exists) {
         setFilesByTc((cur) => {
           const updated = { ...cur };
-          delete updated[id];
+          delete updated[testCaseId];
           return updated;
         });
       }
@@ -152,12 +420,13 @@ export default function ExecutionPage() {
   const downloadTemplate = async (testCaseId: string, testCaseName: string) => {
     try {
       setError("");
-      const blob = await executionService.downloadTemplate(testCaseId);
+      const { blob, fileName } =
+        await executionService.downloadTemplate(testCaseId);
+
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
-      const safeName = testCaseName.replace(/[^a-z0-9\-_]/gi, "_");
       link.href = url;
-      link.download = `${safeName || testCaseId}.xlsx`;
+      link.download = fileName;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -190,6 +459,7 @@ export default function ExecutionPage() {
       setError("Upload one Excel file for each selected test case");
       return;
     }
+
     setBusy(true);
     setError("");
     try {
@@ -207,17 +477,18 @@ export default function ExecutionPage() {
     }
   };
 
+  const currentExecutionStatus = getNormalizedStatus(statusData) || "queued";
   const statusColor = STATUS_COLORS[currentExecutionStatus] || "#89dceb";
   const isTerminalStatus = ["completed", "failed", "error"].includes(
     currentExecutionStatus,
   );
+
   const summary = statusData?.summary || statusData?.result?.summary;
   const results: any[] =
     statusData?.results || statusData?.result?.results || [];
 
   return (
     <div style={styles.page}>
-      {/* Hero */}
       <div style={styles.hero}>
         <div>
           <h1 style={styles.heroTitle}>Execution Center</h1>
@@ -241,127 +512,198 @@ export default function ExecutionPage() {
         )}
       </div>
 
-      {/* Error */}
       {error && <div style={styles.errorBanner}>{error}</div>}
 
-      {/* Section 1 — Scope */}
       <div style={styles.sectionCard}>
         <div style={styles.sectionHeader}>
           <span style={styles.stepBadge}>1</span>
           <h2 style={styles.sectionTitle}>Choose Scope</h2>
         </div>
-        <div style={styles.filterGrid}>
-          <div>
-            <label style={styles.label}>Project</label>
-            <select
-              value={selectedProjectId}
-              onChange={(e) => setSelectedProjectId(e.target.value)}
-              style={styles.select}
-            >
-              <option value="">Select Project</option>
-              {projects.map((p) => (
-                <option key={p.id} value={p.id}>
-                  {p.name}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label style={styles.label}>Module</label>
-            <select
-              value={selectedModuleId}
-              onChange={(e) => setSelectedModuleId(e.target.value)}
-              style={styles.select}
-              disabled={!selectedProjectId}
-            >
-              <option value="">Select Module</option>
-              {modules.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-      </div>
 
-      {/* Section 2 — Test Cases */}
-      <div style={styles.sectionCard}>
-        <div style={styles.sectionHeader}>
-          <span style={styles.stepBadge}>2</span>
-          <h2 style={styles.sectionTitle}>Select Test Cases</h2>
-          {testCases.length > 0 && (
-            <span style={styles.countChip}>{testCases.length} available</span>
-          )}
-        </div>
-
-        {testCases.length === 0 ? (
-          <div style={styles.emptyState}>
-            Select a project and module to load test cases.
-          </div>
+        {projects.length === 0 ? (
+          <div style={styles.emptyState}>No projects available.</div>
         ) : (
-          <>
-            <div style={styles.caseGrid}>
-              {testCases.map((tc) => {
-                const selected = selectedIds.includes(tc.id);
-                return (
-                  <label
-                    key={tc.id}
-                    style={{
-                      ...styles.caseCard,
-                      ...(selected ? styles.caseCardSelected : {}),
-                    }}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selected}
-                      onChange={() => toggleSelect(tc.id)}
-                      style={styles.checkbox}
-                    />
-                    <span style={styles.caseName}>{tc.name}</span>
-                    {selected && <span style={styles.selectedPip} />}
-                  </label>
-                );
-              })}
-            </div>
+          <div style={styles.treeRoot}>
+            {projects.map((project) => {
+              const projectSelected = selectedProjectIds.includes(project.id);
+              const modules = modulesByProject[project.id] || [];
 
-            {selectedCases.length > 0 && (
-              <div style={styles.statsRow}>
-                <div style={styles.statChip}>
-                  <span style={styles.statVal}>{selectedCases.length}</span>
-                  <span style={styles.statLabel}>Selected</span>
-                </div>
-                <div style={styles.statChip}>
-                  <span
-                    style={{
-                      ...styles.statVal,
-                      color:
-                        uploadedCount === selectedCases.length
-                          ? "#a6e3a1"
-                          : "#fab387",
-                    }}
+              const projectExpanded = expandedProjectIds.includes(project.id);
+
+              return (
+                <div key={project.id} style={styles.treeNode}>
+                  <div
+                    style={{ display: "flex", alignItems: "center", gap: 8 }}
                   >
-                    {uploadedCount}/{selectedCases.length}
-                  </span>
-                  <span style={styles.statLabel}>Uploaded</span>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        toggleProjectExpand(project.id);
+                      }}
+                      style={styles.expandToggle}
+                    >
+                      {projectExpanded ? "▾" : "▸"}
+                    </button>
+                    <label style={styles.treeLabel}>
+                      <input
+                        type="checkbox"
+                        checked={projectSelected}
+                        onChange={() => toggleProject(project.id)}
+                        style={styles.checkbox}
+                      />
+                      <span style={styles.treeTitle}>
+                        Project: {project.name}
+                      </span>
+                    </label>
+                  </div>
+
+                  {projectExpanded && (
+                    <div style={styles.treeChildren}>
+                      {modules.length === 0 ? (
+                        <div style={styles.treeHint}>No modules found.</div>
+                      ) : (
+                        modules.map((module) => {
+                          const moduleExpanded = expandedModuleIds.includes(
+                            module.id,
+                          );
+
+                          const moduleSelected = selectedModuleIds.includes(
+                            module.id,
+                          );
+
+                          const moduleCases =
+                            testCasesByModule[module.id] || [];
+
+                          return (
+                            <div key={module.id} style={styles.treeNode}>
+                              <div
+                                style={{
+                                  display: "flex",
+                                  alignItems: "center",
+                                  gap: 8,
+                                }}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    e.stopPropagation();
+                                    toggleModuleExpand(module.id);
+                                  }}
+                                  style={styles.expandToggle}
+                                >
+                                  {moduleExpanded ? "▾" : "▸"}
+                                </button>
+                                <label style={styles.treeLabel}>
+                                  <input
+                                    type="checkbox"
+                                    checked={moduleSelected}
+                                    onChange={() => toggleModule(module.id)}
+                                    style={styles.checkbox}
+                                  />
+                                  <span style={styles.treeSubTitle}>
+                                    Module: {module.name}
+                                  </span>
+                                </label>
+                              </div>
+
+                              {moduleExpanded && (
+                                <div style={styles.treeChildren}>
+                                  {moduleCases.length === 0 ? (
+                                    <div style={styles.treeHint}>
+                                      No test cases found.
+                                    </div>
+                                  ) : (
+                                    moduleCases.map((tc) => {
+                                      const checked = selectedIds.includes(
+                                        tc.id,
+                                      );
+                                      return (
+                                        <label
+                                          key={tc.id}
+                                          style={styles.treeLabel}
+                                        >
+                                          <input
+                                            type="checkbox"
+                                            checked={checked}
+                                            onChange={() =>
+                                              toggleTestCase(tc.id)
+                                            }
+                                            style={styles.checkbox}
+                                          />
+                                          <span style={styles.treeLeaf}>
+                                            Testcase: {tc.name}
+                                          </span>
+                                        </label>
+                                      );
+                                    })
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  )}
                 </div>
-                {!templatesGenerated && (
-                  <button
-                    type="button"
-                    onClick={() => setTemplatesGenerated(true)}
-                    disabled={busy}
-                    style={styles.genButton}
-                  >
-                    Generate Templates
-                  </button>
-                )}
-              </div>
-            )}
-          </>
+              );
+            })}
+          </div>
         )}
       </div>
 
-      {/* Section 3 — Templates & Upload */}
+      <div style={styles.sectionCard}>
+        <div style={styles.sectionHeader}>
+          <span style={styles.stepBadge}>2</span>
+          <h2 style={styles.sectionTitle}>Selected Test Cases</h2>
+          {selectedCases.length > 0 && (
+            <span style={styles.countChip}>
+              {selectedCases.length} selected
+            </span>
+          )}
+        </div>
+
+        {selectedCases.length === 0 ? (
+          <div style={styles.emptyState}>
+            Select test cases from the hierarchy above.
+          </div>
+        ) : (
+          <div style={styles.statsRow}>
+            <div style={styles.statChip}>
+              <span style={styles.statVal}>{selectedCases.length}</span>
+              <span style={styles.statLabel}>Selected</span>
+            </div>
+            <div style={styles.statChip}>
+              <span
+                style={{
+                  ...styles.statVal,
+                  color:
+                    uploadedCount === selectedCases.length
+                      ? "#a6e3a1"
+                      : "#fab387",
+                }}
+              >
+                {uploadedCount}/{selectedCases.length}
+              </span>
+              <span style={styles.statLabel}>Uploaded</span>
+            </div>
+            {!templatesGenerated && (
+              <button
+                type="button"
+                onClick={() => setTemplatesGenerated(true)}
+                disabled={busy}
+                style={styles.genButton}
+              >
+                Generate Templates
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
       {templatesGenerated && selectedCases.length > 0 && (
         <div style={styles.sectionCard}>
           <div style={styles.sectionHeader}>
@@ -382,6 +724,9 @@ export default function ExecutionPage() {
                   }}
                 >
                   <div style={styles.uploadCardName}>{tc.name}</div>
+
+                  {renderAssertions((tc as any).assertions)}
+
                   <div style={styles.uploadActions}>
                     <button
                       type="button"
@@ -410,16 +755,14 @@ export default function ExecutionPage() {
         </div>
       )}
 
-      {/* Poll banner */}
       {executionId && isPolling && (
         <div style={styles.pollBanner}>
           <span style={styles.pulseDot} />
-          Polling for results &nbsp;·&nbsp; {pollCount} checks
+          Polling for results · {pollCount} checks
           {lastPolledAt && <span> · Last: {lastPolledAt}</span>}
         </div>
       )}
 
-      {/* Done banner */}
       {isTerminalStatus && !isPolling && executionId && (
         <div
           style={{
@@ -441,7 +784,6 @@ export default function ExecutionPage() {
         </div>
       )}
 
-      {/* Results */}
       {executionId && statusData && (
         <div style={styles.sectionCard}>
           <div style={styles.sectionHeader}>
@@ -502,7 +844,6 @@ export default function ExecutionPage() {
         </div>
       )}
 
-      {/* Sticky action bar */}
       <div style={styles.actionBar}>
         <div style={styles.actionBarInner}>
           {selectedCases.length > 0 && !allSelectedFilesReady && (
@@ -650,30 +991,6 @@ const styles: Record<string, React.CSSProperties> = {
     textOverflow: "ellipsis",
     whiteSpace: "nowrap",
   },
-  filterGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
-    gap: "14px",
-  },
-  label: {
-    display: "block",
-    marginBottom: "6px",
-    fontSize: "11px",
-    fontWeight: 700,
-    color: "#6c7086",
-    textTransform: "uppercase",
-    letterSpacing: "0.6px",
-  },
-  select: {
-    width: "100%",
-    padding: "10px 12px",
-    borderRadius: "8px",
-    border: "1px solid #45475a",
-    backgroundColor: "#11111b",
-    color: "#cdd6f4",
-    outline: "none",
-    fontSize: "14px",
-  },
   emptyState: {
     padding: "28px",
     textAlign: "center",
@@ -682,25 +999,48 @@ const styles: Record<string, React.CSSProperties> = {
     border: "1px dashed #313244",
     borderRadius: "10px",
   },
-  caseGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))",
+  treeRoot: {
+    display: "flex",
+    flexDirection: "column",
     gap: "8px",
   },
-  caseCard: {
+  treeNode: {
+    border: "1px solid #313244",
+    borderRadius: "8px",
+    padding: "8px 10px",
+    backgroundColor: "#11111b",
+  },
+  treeChildren: {
+    marginLeft: "22px",
+    marginTop: "8px",
+    display: "flex",
+    flexDirection: "column",
+    gap: "6px",
+  },
+  treeLabel: {
     display: "flex",
     alignItems: "center",
-    gap: "10px",
-    padding: "11px 14px",
-    borderRadius: "10px",
-    border: "1px solid #313244",
-    backgroundColor: "#11111b",
+    gap: "8px",
     cursor: "pointer",
-    position: "relative",
   },
-  caseCardSelected: {
-    borderColor: "#cba6f750",
-    backgroundColor: "#cba6f710",
+  treeTitle: {
+    fontSize: "14px",
+    fontWeight: 700,
+    color: "#cdd6f4",
+  },
+  treeSubTitle: {
+    fontSize: "13px",
+    fontWeight: 600,
+    color: "#f5c2e7",
+  },
+  treeLeaf: {
+    fontSize: "13px",
+    color: "#a6adc8",
+  },
+  treeHint: {
+    fontSize: "12px",
+    color: "#6c7086",
+    paddingLeft: "4px",
   },
   checkbox: {
     accentColor: "#cba6f7",
@@ -708,26 +1048,11 @@ const styles: Record<string, React.CSSProperties> = {
     height: "15px",
     flexShrink: 0,
   },
-  caseName: {
-    fontSize: "14px",
-    color: "#cdd6f4",
-    flex: 1,
-    lineHeight: 1.4,
-  },
-  selectedPip: {
-    width: "6px",
-    height: "6px",
-    borderRadius: "50%",
-    backgroundColor: "#cba6f7",
-    flexShrink: 0,
-  },
   statsRow: {
     display: "flex",
     alignItems: "center",
     gap: "10px",
-    marginTop: "16px",
-    paddingTop: "14px",
-    borderTop: "1px solid #313244",
+    marginTop: "6px",
     flexWrap: "wrap",
   },
   statChip: {
@@ -923,5 +1248,19 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: "8px",
     fontWeight: 700,
     fontSize: "14px",
+  },
+  expandToggle: {
+    width: 22,
+    height: 22,
+    borderRadius: 6,
+    border: "1px solid #313244",
+    background: "#1e1e2e",
+    color: "#a6adc8",
+    cursor: "pointer",
+    fontSize: 12,
+    lineHeight: "20px",
+    textAlign: "center",
+    padding: 0,
+    flexShrink: 0,
   },
 };

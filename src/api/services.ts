@@ -50,6 +50,10 @@ export const moduleService = {
     const res = await api.post("/modules", { name, projectId, description });
     return res.data.data;
   },
+  delete: async (moduleId: string) => {
+    const res = await api.delete(`/modules/${moduleId}`);
+    return res.data.data;
+  },
 };
 
 // ── Test Cases ──
@@ -60,6 +64,10 @@ export const testCaseService = {
   },
   create: async (name: string, moduleId: string, description?: string) => {
     const res = await api.post("/testcases", { name, moduleId, description });
+    return res.data.data;
+  },
+  delete: async (testCaseId: string) => {
+    const res = await api.delete("/testcases/" + testCaseId);
     return res.data.data;
   },
   getScripts: async (testCaseId: string) => {
@@ -88,7 +96,7 @@ export const testCaseService = {
           label: string;
           operator: string;
           right_type: "constant" | "variable";
-          right_value: string | string[];
+          right_value: string;
         }>;
         contextMeta?: any;
       };
@@ -112,7 +120,7 @@ export const testCaseService = {
         label: string;
         operator: string;
         right_type: "constant" | "variable";
-        right_value: string | string[];
+        right_value: string;
       }>;
       contextMeta?: any;
     },
@@ -149,13 +157,10 @@ export const recordingService = {
 
 // ── Admin ──
 export const adminService = {
-  // Roles
   getAvailableRoles: async () => {
     const res = await api.get("/api/admin/roles");
     return res.data.data;
   },
-
-  // Users CRUD
   getUsers: async () => {
     const res = await api.get("/api/admin/users");
     return res.data.data;
@@ -189,8 +194,6 @@ export const adminService = {
     const res = await api.delete(`/api/admin/users/${id}`);
     return res.data.data;
   },
-
-  // Role assignment
   getUserRoles: async (userId: string) => {
     const res = await api.get(`/api/admin/users/${userId}/roles`);
     return res.data.data;
@@ -209,8 +212,6 @@ export const adminService = {
     });
     return res.data.data;
   },
-
-  // Project-User mapping
   getUserProjects: async (userId: string) => {
     const res = await api.get(`/api/admin/users/${userId}/projects`);
     return res.data.data;
@@ -236,10 +237,15 @@ export const adminService = {
 //Execution Service
 export const executionService = {
   downloadTemplate: async (testCaseId: string) => {
-    const res = await api.get(`/executions/templates/${testCaseId}`, {
+    const res = await api.get([`/executions/templates/${testCaseId}`], {
       responseType: "blob",
     });
-    return res.data as Blob;
+
+    const cd = res.headers?.["content-disposition"] || "";
+    const match = cd.match(/filename="([^"]+)"/i);
+    const fileName = match?.[1] || `${testCaseId}.xlsx`;
+
+    return { blob: res.data as Blob, fileName };
   },
 
   startExecution: async (payload: {
@@ -277,7 +283,6 @@ export const executionService = {
     const res = await api.get(`/executions/${executionId}`);
     const payload = res.data?.data;
 
-    // If backend accidentally returns JSON string, parse it.
     if (typeof payload === "string") {
       try {
         const parsed = JSON.parse(payload);
@@ -287,7 +292,6 @@ export const executionService = {
       }
     }
 
-    // Normal shape
     return payload?.data ?? payload;
   },
 };

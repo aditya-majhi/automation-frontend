@@ -11,6 +11,8 @@ interface Project {
   name: string;
   description?: string;
   createdAt: string;
+  moduleCount?: number;
+  testCaseCount?: number;
 }
 
 const ProjectsPage = () => {
@@ -55,13 +57,22 @@ const ProjectsPage = () => {
     }
   };
 
-  const handleDelete = async (id: string) => {
+  const handleDelete = async (project: Project) => {
     if (!isAdmin) return;
-    if (!window.confirm("Delete this project?")) return;
+
+    const moduleCount = project.moduleCount || 0;
+    const testCaseCount = project.testCaseCount || 0;
+
+    const message =
+      moduleCount > 0 || testCaseCount > 0
+        ? `This project contains ${moduleCount} module(s) and ${testCaseCount} test case(s). Delete anyway?`
+        : "Delete this project?";
+
+    if (!window.confirm(message)) return;
 
     try {
       setError("");
-      await projectService.delete(id);
+      await projectService.delete(project.id);
       await fetchProjects();
     } catch {
       setError("Failed to delete project");
@@ -100,7 +111,7 @@ const ProjectsPage = () => {
               project.description ||
               new Date(project.createdAt).toLocaleDateString()
             }
-            onDelete={isAdmin ? () => handleDelete(project.id) : undefined}
+            onDelete={isAdmin ? () => handleDelete(project) : undefined}
             onClick={() => navigate(`/projects/${project.id}`)}
           />
         ))

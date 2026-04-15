@@ -51,6 +51,18 @@ const ProjectDetailPage = () => {
     }
   };
 
+  const handleDeleteModule = async (moduleId: string) => {
+    if (!window.confirm("Delete this module and all its test cases?")) return;
+
+    try {
+      setError("");
+      await moduleService.delete(moduleId);
+      await fetchModules();
+    } catch {
+      setError("Failed to delete module");
+    }
+  };
+
   return (
     <div style={styles.page}>
       <button style={styles.back} onClick={() => navigate("/")}>
@@ -77,6 +89,7 @@ const ProjectDetailPage = () => {
             subtitle={
               m.description || new Date(m.createdAt).toLocaleDateString()
             }
+            onDelete={() => handleDeleteModule(m.id)}
             onClick={() => navigate(`/modules/${m.id}`)}
           />
         ))
