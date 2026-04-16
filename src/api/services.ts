@@ -237,7 +237,7 @@ export const adminService = {
 //Execution Service
 export const executionService = {
   downloadTemplate: async (testCaseId: string) => {
-    const res = await api.get([`/executions/templates/${testCaseId}`], {
+    const res = await api.get(`/executions/templates/${testCaseId}`, {
       responseType: "blob",
     });
 
