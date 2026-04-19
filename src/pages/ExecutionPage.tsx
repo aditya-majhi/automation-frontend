@@ -352,9 +352,22 @@ export default function ExecutionPage() {
         );
 
         if (parentProjectId) {
-          setSelectedProjectIds((prev) =>
-            Array.from(new Set([...prev, parentProjectId])),
+          const allModulesForProject = (
+            modulesByProject[parentProjectId] || []
+          ).map((m) => m.id);
+          const newSelectedModuleIds = new Set([
+            ...selectedModuleIds,
+            moduleId,
+          ]);
+          const allModulesSelected = allModulesForProject.every((mId) =>
+            newSelectedModuleIds.has(mId),
           );
+
+          if (allModulesSelected) {
+            setSelectedProjectIds((prev) =>
+              Array.from(new Set([...prev, parentProjectId])),
+            );
+          }
         }
 
         setExpandedModuleIds((prev) =>

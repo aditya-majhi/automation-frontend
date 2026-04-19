@@ -95,8 +95,9 @@ export const testCaseService = {
           left: string;
           label: string;
           operator: string;
-          right_type: "constant" | "variable";
-          right_value: string;
+          right_type?: "constant" | "variable" | null;
+          right_value?: string | number | boolean | string[] | null;
+          regex_value?: string | null;
         }>;
         contextMeta?: any;
       };
@@ -119,8 +120,9 @@ export const testCaseService = {
         left: string;
         label: string;
         operator: string;
-        right_type: "constant" | "variable";
-        right_value: string;
+        right_type?: "constant" | "variable" | null;
+        right_value?: string | number | boolean | string[] | null;
+        regex_value?: string | null;
       }>;
       contextMeta?: any;
     },

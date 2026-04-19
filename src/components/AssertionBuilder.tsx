@@ -15,6 +15,7 @@ type Row = {
   right_type: "constant" | "variable";
   right_constant: string;
   right_variable: string;
+  regex_value: string;
   connector: "AND" | "OR";
 };
 
@@ -38,7 +39,8 @@ type AssertionsPanelProps = {
             left: string;
             operator: string;
             right_type: "constant" | "variable";
-            right_value: string;
+            right_value: string | number | boolean | string[] | null;
+            regex_value: string | null;
           }>;
         };
       },
@@ -65,6 +67,13 @@ const DEFAULT_OPERATORS = [
 ];
 
 const CONNECTOR_OPTIONS: ("AND" | "OR")[] = ["AND", "OR"];
+
+const NO_RIGHT_VALUE_OPERATORS = new Set(["is_empty", "is_not_empty"]);
+
+const isRegexOperator = (op: string) => op === "matches_regex";
+const isNoRightOperator = (op: string) => NO_RIGHT_VALUE_OPERATORS.has(op);
+const isRightDisabledOperator = (op: string) =>
+  isRegexOperator(op) || isNoRightOperator(op);
 
 const unwrap = <T,>(res: any, fallback: T): T => {
   if (res == null) return fallback;
@@ -124,6 +133,7 @@ export default function AssertionsPanel({
       right_constant: "",
       right_variable: "",
       connector: "AND",
+      regex_value: "",
     },
   ]);
   const [loading, setLoading] = useState(false);
@@ -202,14 +212,15 @@ export default function AssertionsPanel({
       return;
     }
 
-    const validRows = rows.filter(
-      (r) =>
-        r.left &&
-        r.operator &&
-        (r.right_type === "constant"
-          ? r.right_constant.trim().length > 0
-          : r.right_variable.trim().length > 0),
-    );
+    const validRows = rows.filter((r) => {
+      if (!r.left || !r.operator) return false;
+      if (isRegexOperator(r.operator)) return r.regex_value.trim().length > 0;
+      if (isNoRightOperator(r.operator)) return true;
+
+      return r.right_type === "constant"
+        ? r.right_constant.trim().length > 0
+        : r.right_variable.trim().length > 0;
+    });
 
     if (!validRows.length) {
       setErrorText(
@@ -220,17 +231,44 @@ export default function AssertionsPanel({
 
     const logic = buildLogicFromRows(validRows);
 
-    const rules = validRows.map((r) => ({
-      id: r.id,
-      label: "R" + r.id,
-      left: decodeVarName(r.left),
-      operator: r.operator,
-      right_type: r.right_type,
-      right_value:
-        r.right_type === "variable"
-          ? decodeVarName(r.right_variable)
-          : r.right_constant,
-    }));
+    const rules = validRows.map((r) => {
+      if (isRegexOperator(r.operator)) {
+        return {
+          id: r.id,
+          label: "R" + r.id,
+          left: decodeVarName(r.left),
+          operator: r.operator,
+          right_type: null,
+          right_value: null,
+          regex_value: r.regex_value,
+        };
+      }
+
+      if (isNoRightOperator(r.operator)) {
+        return {
+          id: r.id,
+          label: "R" + r.id,
+          left: decodeVarName(r.left),
+          operator: r.operator,
+          right_type: null,
+          right_value: null,
+          regex_value: null,
+        };
+      }
+
+      return {
+        id: r.id,
+        label: "R" + r.id,
+        left: decodeVarName(r.left),
+        operator: r.operator,
+        right_type: r.right_type,
+        right_value:
+          r.right_type === "variable"
+            ? decodeVarName(r.right_variable)
+            : r.right_constant,
+        regex_value: null,
+      };
+    });
 
     setLoading(true);
     try {
@@ -295,9 +333,41 @@ export default function AssertionsPanel({
 
                     <select
                       value={row.operator}
-                      onChange={(e) =>
-                        updateRow(row.id, { operator: e.target.value })
-                      }
+                      onChange={(e) => {
+                        const nextOp = e.target.value;
+
+                        if (isRegexOperator(nextOp)) {
+                          const entered = window.prompt(
+                            "Enter regex pattern",
+                            row.regex_value || "",
+                          );
+                          if (entered === null) return;
+
+                          updateRow(row.id, {
+                            operator: nextOp,
+                            regex_value: entered.trim(),
+                            right_type: "constant",
+                            right_constant: "",
+                            right_variable: "",
+                          });
+                          return;
+                        }
+
+                        if (isNoRightOperator(nextOp)) {
+                          updateRow(row.id, {
+                            operator: nextOp,
+                            regex_value: "",
+                            right_constant: "",
+                            right_variable: "",
+                          });
+                          return;
+                        }
+
+                        updateRow(row.id, {
+                          operator: nextOp,
+                          regex_value: "",
+                        });
+                      }}
                       style={styles.inputSm}
                     >
                       {operators.map((op) => (
@@ -317,12 +387,37 @@ export default function AssertionsPanel({
                         })
                       }
                       style={styles.inputSm}
+                      disabled={isRightDisabledOperator(row.operator)}
                     >
                       <option value="constant">constant</option>
                       <option value="variable">variable</option>
                     </select>
 
-                    {row.right_type === "constant" ? (
+                    {isRegexOperator(row.operator) ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const entered = window.prompt(
+                            "Enter regex pattern",
+                            row.regex_value || "",
+                          );
+                          if (entered === null) return;
+                          updateRow(row.id, { regex_value: entered.trim() });
+                        }}
+                        style={styles.regexBtn}
+                      >
+                        {row.regex_value
+                          ? `Regex: ${row.regex_value}`
+                          : "Set regex pattern"}
+                      </button>
+                    ) : isNoRightOperator(row.operator) ? (
+                      <input
+                        value=""
+                        disabled
+                        placeholder="No value required"
+                        style={{ ...styles.input, ...styles.disabledInput }}
+                      />
+                    ) : row.right_type === "constant" ? (
                       <input
                         value={row.right_constant}
                         onChange={(e) =>
@@ -586,5 +681,23 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 8,
     fontSize: 12,
     fontWeight: 700,
+  },
+  regexBtn: {
+    width: "100%",
+    backgroundColor: "#11111b",
+    border: "1px solid #89b4fa",
+    color: "#89b4fa",
+    borderRadius: 8,
+    padding: "8px 10px",
+    fontSize: 12,
+    textAlign: "left" as const,
+    cursor: "pointer",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap" as const,
+  },
+  disabledInput: {
+    opacity: 0.6,
+    cursor: "not-allowed",
   },
 };
