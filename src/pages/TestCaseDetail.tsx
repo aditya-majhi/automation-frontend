@@ -29,6 +29,9 @@ const TestCaseDetailPage = () => {
   const baseScriptRef = useRef("");
   const lastSavedScriptRef = useRef("");
   const saveTimerRef = useRef<number | null>(null);
+  const [activeRecordingTab, setActiveRecordingTab] = useState<
+    "steps" | "variables" | "selenium" | "video"
+  >("steps");
 
   const {
     status: extensionStatus,
@@ -242,12 +245,13 @@ const TestCaseDetailPage = () => {
             <RecordingDetailsTabs
               recording={recordingDisplay}
               onPythonScriptGenerated={handlePythonScriptGenerated}
+              onTabChange={setActiveRecordingTab}
             />
           </div>
         </div>
       )}
 
-      {finalScript ? (
+      {finalScript && activeRecordingTab === "selenium" ? (
         <div style={styles.finalScriptBox}>
           <div style={styles.finalScriptHeader}>
             <span style={styles.finalScriptTitle}>

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 type Step = {
   type?: string;
+  stepId?: string;
   action?: string;
   selector?: { css?: string; xpath?: string; relativeXPath?: string };
   selectorCss?: string;
@@ -76,6 +77,7 @@ interface RecordingDetailsTabsProps {
     videoUrl?: string | null;
   };
   onPythonScriptGenerated?: (script: string) => void;
+  onTabChange?: (tab: TabKey) => void;
 }
 
 type TabKey = "steps" | "variables" | "selenium" | "video";
@@ -549,19 +551,67 @@ function getCapture(v: Variable): { text?: string | null; value?: any } | null {
 const RecordingDetailsTabs: React.FC<RecordingDetailsTabsProps> = ({
   recording,
   onPythonScriptGenerated,
+  onTabChange,
 }) => {
   const [activeTab, setActiveTab] = useState<TabKey>("steps");
   const [locatorPref, setLocatorPref] = useState<LocatorPref>("relativeXPath");
   const [scriptLang, setScriptLang] = useState<ScriptLanguage>("python");
+  const [runtimePaths, setRuntimePaths] = useState<Record<string, string>>({});
+
   const steps = recording.steps || [];
   const variables = recording.variables || [];
   const inputVars = variables.filter((v) => v.kind === "input");
   const outputVars = variables.filter((v) => v.kind === "output");
   const buttonVars = variables.filter((v) => v.kind === "button");
 
+  const stepsWithRuntimePaths = useMemo(
+    () =>
+      steps.map((step, index) => {
+        const stepKey = step.stepId || String(index);
+        const targetTag = (step.targetTag || "").toLowerCase();
+        const inputType = (
+          step.inputType ||
+          step.contextMeta?.inputType ||
+          step.context?.inputType ||
+          ""
+        ).toLowerCase();
+
+        const isFileStep =
+          step.contextMeta?.requiresRuntimePath === true ||
+          step.context?.requiresRuntimePath === true ||
+          inputType === "file" ||
+          (targetTag === "input" && inputType === "file");
+
+        if (!isFileStep) return step;
+
+        const runtimePath =
+          runtimePaths[stepKey] ??
+          step.contextMeta?.runtimePath ??
+          step.context?.runtimePath ??
+          "";
+
+        if (!runtimePath) return step;
+
+        return {
+          ...step,
+          value: runtimePath,
+          contextMeta: {
+            ...(step.contextMeta || {}),
+            runtimePath,
+          },
+        };
+      }),
+    [steps, runtimePaths],
+  );
+
   const pythonBaseScript = useMemo(
-    () => generateFullPythonScriptWithVariables(steps, variables, locatorPref),
-    [steps, variables, locatorPref],
+    () =>
+      generateFullPythonScriptWithVariables(
+        stepsWithRuntimePaths,
+        variables,
+        locatorPref,
+      ),
+    [stepsWithRuntimePaths, variables, locatorPref],
   );
 
   useEffect(() => {
@@ -569,6 +619,10 @@ const RecordingDetailsTabs: React.FC<RecordingDetailsTabsProps> = ({
       onPythonScriptGenerated(pythonBaseScript || "");
     }
   }, [pythonBaseScript, onPythonScriptGenerated]);
+
+  useEffect(() => {
+    onTabChange?.(activeTab);
+  }, [activeTab, onTabChange]);
 
   return (
     <div>
@@ -638,8 +692,16 @@ const RecordingDetailsTabs: React.FC<RecordingDetailsTabsProps> = ({
 
       <div style={styles.tabBody}>
         {activeTab === "steps" && (
-          <StepsTable steps={steps} locatorPref={locatorPref} />
+          <StepsTable
+            steps={steps}
+            locatorPref={locatorPref}
+            runtimePaths={runtimePaths}
+            onRuntimePathChange={(index, path) =>
+              setRuntimePaths((prev) => ({ ...prev, [index]: path }))
+            }
+          />
         )}
+
         {activeTab === "variables" && (
           <VariablesPanel
             variables={variables}
@@ -649,9 +711,10 @@ const RecordingDetailsTabs: React.FC<RecordingDetailsTabsProps> = ({
             locatorPref={locatorPref}
           />
         )}
+
         {activeTab === "selenium" && (
           <SeleniumScriptView
-            steps={steps}
+            steps={stepsWithRuntimePaths}
             variables={variables}
             locatorPref={locatorPref}
             language={scriptLang}
@@ -690,10 +753,16 @@ function renderTabButton(
 
 // ── Steps Table ───────────────────────────────────────────────────────────────
 
-const StepsTable: React.FC<{ steps: Step[]; locatorPref: LocatorPref }> = ({
-  steps,
-  locatorPref,
-}) => {
+const StepsTable: React.FC<{
+  steps: Step[];
+  locatorPref: LocatorPref;
+  runtimePaths: Record<number, string>;
+  onRuntimePathChange: (stepKey: string, path: string) => void;
+}> = ({ steps, locatorPref, runtimePaths, onRuntimePathChange }) => {
+  const [editingPaths, setEditingPaths] = useState<Record<number, boolean>>({});
+  const [draftPaths, setDraftPaths] = useState<Record<number, string>>({});
+  const [savingPaths, setSavingPaths] = useState<Record<number, boolean>>({});
+
   if (!steps.length)
     return <div style={styles.empty}>No steps recorded yet.</div>;
 
@@ -719,10 +788,31 @@ const StepsTable: React.FC<{ steps: Step[]; locatorPref: LocatorPref }> = ({
             const selector = normalizeSelector(step);
             const locator = getPreferredLocator(selector, locatorPref);
             const elementLabel = buildElementLabel(step.targetTag, selector);
-            const value =
-              step.value ?? step.variableValue ?? step.buttonValue ?? null;
             const selenium = generateStepSeleniumPreview(step, locatorPref);
             const pageName = resolvePageName(step);
+            const value =
+              step.value ?? step.variableValue ?? step.buttonValue ?? null;
+            const stepKey = step.stepId || String(index);
+
+            const isFileStep = (() => {
+              const t = (step.targetTag || "").toLowerCase();
+              const inType = (
+                step.inputType ||
+                step.contextMeta?.inputType ||
+                step.context?.inputType ||
+                ""
+              ).toLowerCase();
+
+              return (
+                step.contextMeta?.requiresRuntimePath === true ||
+                step.context?.requiresRuntimePath === true ||
+                inType === "file" ||
+                (t === "input" && inType === "file")
+              );
+            })();
+
+            const existingRuntimePath =
+              step.contextMeta?.runtimePath ?? step.context?.runtimePath ?? "";
             const contextType = resolveContext(step);
             const ctxInfo =
               CONTEXT_ICONS[contextType] || CONTEXT_ICONS.formField;
@@ -764,15 +854,194 @@ const StepsTable: React.FC<{ steps: Step[]; locatorPref: LocatorPref }> = ({
                 </td>
                 <td style={styles.td}>
                   {value != null ? (
-                    String(value)
+                    <span style={{ opacity: isFileStep ? 0.5 : 1 }}>
+                      {String(value)}
+                    </span>
                   ) : (
                     <span style={styles.muted}>-</span>
                   )}
+
+                  {isFileStep &&
+                    (() => {
+                      const savedPath =
+                        runtimePaths[stepKey] ?? existingRuntimePath;
+                      const originalName =
+                        step.contextMeta?.originalFileName ||
+                        (step.value
+                          ? String(step.value).split(/[/\\]/).pop()
+                          : null) ||
+                        "file";
+                      const isEditing = editingPaths[stepKey] ?? false;
+
+                      const handleSave = async () => {
+                        const path = draftPaths[stepKey] ?? savedPath;
+                        setSavingPaths((p) => ({ ...p, [stepKey]: true }));
+                        try {
+                          if (step.stepId) {
+                            const api = (await import("../api/axios")).default;
+                            await api.patch(
+                              `/recordings/step/${step.stepId}/runtime-path`,
+                              {
+                                runtimePath: path,
+                              },
+                            );
+                          }
+                          onRuntimePathChange(stepKey, path);
+                          setEditingPaths((p) => ({ ...p, [stepKey]: false }));
+                        } catch {
+                          // keep editing open on failure
+                        } finally {
+                          setSavingPaths((p) => ({ ...p, [stepKey]: false }));
+                        }
+                      };
+
+                      return (
+                        <div style={{ marginTop: 6 }}>
+                          <div
+                            style={{
+                              fontSize: 10,
+                              color: "#f9e2af",
+                              marginBottom: 4,
+                            }}
+                          >
+                            📁 Runtime file path:
+                          </div>
+
+                          {!isEditing ? (
+                            <div
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 6,
+                              }}
+                            >
+                              <code
+                                style={{
+                                  fontSize: 11,
+                                  color: savedPath ? "#a6e3a1" : "#6c7086",
+                                  fontFamily: "monospace",
+                                  flex: 1,
+                                  wordBreak: "break-all",
+                                }}
+                              >
+                                {savedPath || originalName}
+                              </code>
+                              <button
+                                type="button"
+                                title="Edit runtime path"
+                                onClick={() => {
+                                  setDraftPaths((p) => ({
+                                    ...p,
+                                    [stepKey]: savedPath,
+                                  }));
+                                  setEditingPaths((p) => ({
+                                    ...p,
+                                    [stepKey]: true,
+                                  }));
+                                }}
+                                style={{
+                                  background: "none",
+                                  border: "1px solid #45475a",
+                                  borderRadius: 4,
+                                  color: "#a6adc8",
+                                  cursor: "pointer",
+                                  fontSize: 11,
+                                  padding: "2px 6px",
+                                }}
+                              >
+                                ✏
+                              </button>
+                            </div>
+                          ) : (
+                            <div>
+                              <input
+                                type="text"
+                                autoFocus
+                                placeholder={`e.g. C:\\TestFiles\\${originalName}`}
+                                value={draftPaths[stepKey] ?? savedPath}
+                                onChange={(e) => {
+                                  setDraftPaths((p) => ({
+                                    ...p,
+                                    [stepKey]: e.target.value,
+                                  }));
+                                }}
+                                style={{
+                                  width: "100%",
+                                  padding: "4px 8px",
+                                  backgroundColor: "#1e1e2e",
+                                  border: `1px solid ${draftPaths[stepKey] ? "#a6e3a1" : "#f38ba8"}`,
+                                  borderRadius: 4,
+                                  color: "#cdd6f4",
+                                  fontSize: 11,
+                                  boxSizing: "border-box",
+                                  marginBottom: 4,
+                                }}
+                              />
+                              <div style={{ display: "flex", gap: 4 }}>
+                                <button
+                                  type="button"
+                                  disabled={savingPaths[stepKey]}
+                                  onClick={handleSave}
+                                  style={{
+                                    background: "#a6e3a1",
+                                    border: "none",
+                                    borderRadius: 4,
+                                    color: "#1e1e2e",
+                                    cursor: "pointer",
+                                    fontSize: 10,
+                                    fontWeight: 600,
+                                    padding: "3px 10px",
+                                  }}
+                                >
+                                  {savingPaths[stepKey] ? "Saving…" : "Save"}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setEditingPaths((p) => ({
+                                      ...p,
+                                      [stepKey]: false,
+                                    }))
+                                  }
+                                  style={{
+                                    background: "#45475a",
+                                    border: "none",
+                                    borderRadius: 4,
+                                    color: "#cdd6f4",
+                                    cursor: "pointer",
+                                    fontSize: 10,
+                                    padding: "3px 10px",
+                                  }}
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          )}
+
+                          {!savedPath && (
+                            <div
+                              style={{
+                                fontSize: 10,
+                                color: "#f38ba8",
+                                marginTop: 3,
+                              }}
+                            >
+                              ⚠ Required for execution
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
                 </td>
                 <td style={styles.td}>
-                  <span style={styles.pageLabel} title={step.pageUrl || ""}>
-                    {pageName}
-                  </span>
+                  {action === "store_variable" ? (
+                    <span style={styles.pageLabel} title={step.pageUrl || ""}>
+                      {pageName}
+                    </span>
+                  ) : (
+                    <span style={styles.muted}>-</span>
+                  )}
                 </td>
                 <td style={styles.td}>
                   <span
@@ -1539,7 +1808,6 @@ function generatePythonStepWithVariable(
       "]",
   );
 
-  // Keep existing locator pipeline behavior via toActionModel/getLocatorForModel.
   const model = toActionModel(step);
   if (!model) {
     lines.push("    # Preserved step: no actionable locator/model generated");
