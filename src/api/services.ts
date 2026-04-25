@@ -10,6 +10,16 @@ export const authService = {
     const res = await api.post("/auth/login", { email, password });
     return res.data;
   },
+  refresh: async (refreshToken: string) => {
+    const res = await api.post("/auth/refresh", { refreshToken });
+    return res.data;
+  },
+  logout: async (refreshToken?: string) => {
+    const res = await api.post("/auth/logout", {
+      refreshToken: refreshToken || null,
+    });
+    return res.data;
+  },
   forgotPassword: async (email: string) => {
     const res = await api.post("/auth/forgot-password", { email });
     return res.data.data;
@@ -43,7 +53,11 @@ export const projectService = {
 // ── Modules ──
 export const moduleService = {
   getByProject: async (projectId: string) => {
-    const res = await api.get(`/modules/${projectId}`);
+    const res = await api.get("/modules/" + projectId);
+    return res.data.data;
+  },
+  getById: async (moduleId: string) => {
+    const res = await api.get("/modules/id/" + moduleId);
     return res.data.data;
   },
   create: async (name: string, projectId: string, description?: string) => {
@@ -51,7 +65,7 @@ export const moduleService = {
     return res.data.data;
   },
   delete: async (moduleId: string) => {
-    const res = await api.delete(`/modules/${moduleId}`);
+    const res = await api.delete("/modules/" + moduleId);
     return res.data.data;
   },
 };
@@ -60,6 +74,10 @@ export const moduleService = {
 export const testCaseService = {
   getByModule: async (moduleId: string) => {
     const res = await api.get("/testcases/" + moduleId);
+    return res.data.data;
+  },
+  getMeta: async (testCaseId: string) => {
+    const res = await api.get("/testcases/" + testCaseId + "/meta");
     return res.data.data;
   },
   create: async (name: string, moduleId: string, description?: string) => {

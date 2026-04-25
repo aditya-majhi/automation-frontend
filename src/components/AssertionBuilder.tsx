@@ -66,6 +66,80 @@ const DEFAULT_OPERATORS = [
   "is_not_empty",
 ];
 
+const OPS_BY_DATATYPE: Record<string, string[]> = {
+  string: [
+    "==",
+    "!=",
+    "contains",
+    "not_contains",
+    "starts_with",
+    "ends_with",
+    "matches_regex",
+    "is_empty",
+    "is_not_empty",
+  ],
+  text: [
+    "==",
+    "!=",
+    "contains",
+    "not_contains",
+    "starts_with",
+    "ends_with",
+    "matches_regex",
+    "is_empty",
+    "is_not_empty",
+  ],
+  number: ["==", "!=", ">", "<", ">=", "<=", "is_empty", "is_not_empty"],
+  boolean: ["==", "!=", "is_empty", "is_not_empty"],
+  email: [
+    "==",
+    "!=",
+    "contains",
+    "not_contains",
+    "matches_regex",
+    "is_empty",
+    "is_not_empty",
+  ],
+  url: [
+    "==",
+    "!=",
+    "contains",
+    "starts_with",
+    "ends_with",
+    "is_empty",
+    "is_not_empty",
+  ],
+  phone: [
+    "==",
+    "!=",
+    "contains",
+    "starts_with",
+    "ends_with",
+    "is_empty",
+    "is_not_empty",
+  ],
+  date: ["==", "!=", ">", "<", ">=", "<=", "is_empty", "is_not_empty"],
+  datetime: ["==", "!=", ">", "<", ">=", "<=", "is_empty", "is_not_empty"],
+  time: ["==", "!=", ">", "<", ">=", "<=", "is_empty", "is_not_empty"],
+  password: ["==", "!=", "is_empty", "is_not_empty"],
+  color: ["==", "!=", "is_empty", "is_not_empty"],
+  file: ["is_empty", "is_not_empty"],
+  enum: ["==", "!=", "in_list", "not_in_list", "is_empty", "is_not_empty"],
+  enum_type: ["==", "!=", "in_list", "not_in_list", "is_empty", "is_not_empty"],
+};
+
+const getOpsByDataType = (dataType: string): string[] => {
+  return OPS_BY_DATATYPE[dataType] || DEFAULT_OPERATORS;
+};
+
+const getDataTypeForEncodedVar = (
+  encoded: string,
+  vars: AssertionVariable[],
+): string => {
+  const found = vars.find((v) => encodeVar(v.name, v.pageName) === encoded);
+  return found?.dataType || "string";
+};
+
 const CONNECTOR_OPTIONS: ("AND" | "OR")[] = ["AND", "OR"];
 
 const NO_RIGHT_VALUE_OPERATORS = new Set(["is_empty", "is_not_empty"]);
@@ -311,169 +385,200 @@ export default function AssertionsPanel({
                 <div style={styles.headDel} />
               </div>
 
-              {rows.map((row, idx) => (
-                <div key={row.id}>
-                  <div style={styles.row}>
-                    <div style={styles.rowNum}>{row.id}.</div>
+              {rows.map((row, idx) => {
+                const rowDataType = getDataTypeForEncodedVar(
+                  row.left,
+                  normalizedVars,
+                );
+                const rowOperators = getOpsByDataType(rowDataType);
 
-                    <select
-                      value={row.left}
-                      onChange={(e) =>
-                        updateRow(row.id, { left: e.target.value })
-                      }
-                      style={styles.input}
-                    >
-                      <option value="">No options to select</option>
-                      {variableOptions.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
+                return (
+                  <div key={row.id}>
+                    <div style={styles.row}>
+                      <div style={styles.rowNum}>{row.id}.</div>
 
-                    <select
-                      value={row.operator}
-                      onChange={(e) => {
-                        const nextOp = e.target.value;
-
-                        if (isRegexOperator(nextOp)) {
-                          const entered = window.prompt(
-                            "Enter regex pattern",
-                            row.regex_value || "",
+                      <select
+                        value={row.left}
+                        onChange={(e) => {
+                          const nextLeft = e.target.value;
+                          const nextDataType = getDataTypeForEncodedVar(
+                            nextLeft,
+                            normalizedVars,
                           );
-                          if (entered === null) return;
+                          const nextOps = getOpsByDataType(nextDataType);
+                          const nextOperator = nextOps.includes(row.operator)
+                            ? row.operator
+                            : nextOps[0] || "==";
 
                           updateRow(row.id, {
-                            operator: nextOp,
-                            regex_value: entered.trim(),
+                            left: nextLeft,
+                            operator: nextOperator,
                             right_type: "constant",
                             right_constant: "",
                             right_variable: "",
-                          });
-                          return;
-                        }
-
-                        if (isNoRightOperator(nextOp)) {
-                          updateRow(row.id, {
-                            operator: nextOp,
                             regex_value: "",
-                            right_constant: "",
-                            right_variable: "",
                           });
-                          return;
-                        }
-
-                        updateRow(row.id, {
-                          operator: nextOp,
-                          regex_value: "",
-                        });
-                      }}
-                      style={styles.inputSm}
-                    >
-                      {operators.map((op) => (
-                        <option key={op} value={op}>
-                          {op}
-                        </option>
-                      ))}
-                    </select>
-
-                    <select
-                      value={row.right_type}
-                      onChange={(e) =>
-                        updateRow(row.id, {
-                          right_type: e.target.value as "constant" | "variable",
-                          right_constant: "",
-                          right_variable: "",
-                        })
-                      }
-                      style={styles.inputSm}
-                      disabled={isRightDisabledOperator(row.operator)}
-                    >
-                      <option value="constant">constant</option>
-                      <option value="variable">variable</option>
-                    </select>
-
-                    {isRegexOperator(row.operator) ? (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const entered = window.prompt(
-                            "Enter regex pattern",
-                            row.regex_value || "",
-                          );
-                          if (entered === null) return;
-                          updateRow(row.id, { regex_value: entered.trim() });
                         }}
-                        style={styles.regexBtn}
-                      >
-                        {row.regex_value
-                          ? `Regex: ${row.regex_value}`
-                          : "Set regex pattern"}
-                      </button>
-                    ) : isNoRightOperator(row.operator) ? (
-                      <input
-                        value=""
-                        disabled
-                        placeholder="No value required"
-                        style={{ ...styles.input, ...styles.disabledInput }}
-                      />
-                    ) : row.right_type === "constant" ? (
-                      <input
-                        value={row.right_constant}
-                        onChange={(e) =>
-                          updateRow(row.id, { right_constant: e.target.value })
-                        }
-                        placeholder="Enter value"
-                        style={styles.input}
-                      />
-                    ) : (
-                      <select
-                        value={row.right_variable}
-                        onChange={(e) =>
-                          updateRow(row.id, { right_variable: e.target.value })
-                        }
                         style={styles.input}
                       >
-                        <option value="">Select variable</option>
+                        <option value="">No options to select</option>
                         {variableOptions.map((option) => (
                           <option key={option.value} value={option.value}>
                             {option.label}
                           </option>
                         ))}
                       </select>
-                    )}
 
-                    <button
-                      type="button"
-                      onClick={() => removeRow(row.id)}
-                      style={styles.deleteBtn}
-                      title="Remove row"
-                    >
-                      ✕
-                    </button>
-                  </div>
-
-                  {idx < rows.length - 1 && (
-                    <div style={styles.connectorRow}>
                       <select
-                        value={row.connector}
-                        onChange={(e) =>
+                        value={row.operator}
+                        onChange={(e) => {
+                          const nextOp = e.target.value;
+
+                          if (isRegexOperator(nextOp)) {
+                            const entered = window.prompt(
+                              "Enter regex pattern",
+                              row.regex_value || "",
+                            );
+                            if (entered === null) return;
+
+                            updateRow(row.id, {
+                              operator: nextOp,
+                              regex_value: entered.trim(),
+                              right_type: "constant",
+                              right_constant: "",
+                              right_variable: "",
+                            });
+                            return;
+                          }
+
+                          if (isNoRightOperator(nextOp)) {
+                            updateRow(row.id, {
+                              operator: nextOp,
+                              regex_value: "",
+                              right_constant: "",
+                              right_variable: "",
+                            });
+                            return;
+                          }
+
                           updateRow(row.id, {
-                            connector: e.target.value as "AND" | "OR",
-                          })
-                        }
-                        style={styles.connectorSelect}
+                            operator: nextOp,
+                            regex_value: "",
+                          });
+                        }}
+                        style={styles.inputSm}
                       >
-                        {CONNECTOR_OPTIONS.map((c) => (
-                          <option key={c} value={c}>
-                            {c}
+                        {rowOperators.map((op) => (
+                          <option key={op} value={op}>
+                            {op}
                           </option>
                         ))}
                       </select>
+
+                      <select
+                        value={row.right_type}
+                        onChange={(e) =>
+                          updateRow(row.id, {
+                            right_type: e.target.value as
+                              | "constant"
+                              | "variable",
+                            right_constant: "",
+                            right_variable: "",
+                          })
+                        }
+                        style={styles.inputSm}
+                        disabled={isRightDisabledOperator(row.operator)}
+                      >
+                        <option value="constant">constant</option>
+                        <option value="variable">variable</option>
+                      </select>
+
+                      {isRegexOperator(row.operator) ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const entered = window.prompt(
+                              "Enter regex pattern",
+                              row.regex_value || "",
+                            );
+                            if (entered === null) return;
+                            updateRow(row.id, { regex_value: entered.trim() });
+                          }}
+                          style={styles.regexBtn}
+                        >
+                          {row.regex_value
+                            ? `Regex: ${row.regex_value}`
+                            : "Set regex pattern"}
+                        </button>
+                      ) : isNoRightOperator(row.operator) ? (
+                        <input
+                          value=""
+                          disabled
+                          placeholder="No value required"
+                          style={{ ...styles.input, ...styles.disabledInput }}
+                        />
+                      ) : row.right_type === "constant" ? (
+                        <input
+                          value={row.right_constant}
+                          onChange={(e) =>
+                            updateRow(row.id, {
+                              right_constant: e.target.value,
+                            })
+                          }
+                          placeholder="Enter value"
+                          style={styles.input}
+                        />
+                      ) : (
+                        <select
+                          value={row.right_variable}
+                          onChange={(e) =>
+                            updateRow(row.id, {
+                              right_variable: e.target.value,
+                            })
+                          }
+                          style={styles.input}
+                        >
+                          <option value="">Select variable</option>
+                          {variableOptions.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={() => removeRow(row.id)}
+                        style={styles.deleteBtn}
+                        title="Remove row"
+                      >
+                        ✕
+                      </button>
                     </div>
-                  )}
-                </div>
-              ))}
+
+                    {idx < rows.length - 1 && (
+                      <div style={styles.connectorRow}>
+                        <select
+                          value={row.connector}
+                          onChange={(e) =>
+                            updateRow(row.id, {
+                              connector: e.target.value as "AND" | "OR",
+                            })
+                          }
+                          style={styles.connectorSelect}
+                        >
+                          {CONNECTOR_OPTIONS.map((c) => (
+                            <option key={c} value={c}>
+                              {c}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
 
               <button type="button" onClick={addRow} style={styles.addRowBtn}>
                 + Add Next Assertion

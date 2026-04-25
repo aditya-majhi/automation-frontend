@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { testCaseService } from "../api/services";
+import { testCaseService, moduleService } from "../api/services";
 import Card from "../components/Card";
 import Modal from "../components/Modal";
 import FormInput from "../components/FormInput";
@@ -12,15 +12,35 @@ interface TestCase {
   createdAt: string;
 }
 
+interface ModuleMeta {
+  id: string;
+  name: string;
+  project?: {
+    id: string;
+    name: string;
+  };
+}
+
 const ModuleDetailPage = () => {
   const { moduleId } = useParams<{ moduleId: string }>();
   const navigate = useNavigate();
+  const [moduleMeta, setModuleMeta] = useState<ModuleMeta | null>(null);
   const [testCases, setTestCases] = useState<TestCase[]>([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [error, setError] = useState("");
+
+  const fetchModuleMeta = async () => {
+    if (!moduleId) return;
+    try {
+      const data = await moduleService.getById(moduleId);
+      setModuleMeta(data || null);
+    } catch {
+      setModuleMeta(null);
+    }
+  };
 
   const fetchTestCases = async () => {
     if (!moduleId) return;
@@ -35,6 +55,7 @@ const ModuleDetailPage = () => {
   };
 
   useEffect(() => {
+    fetchModuleMeta();
     fetchTestCases();
   }, [moduleId]);
 
@@ -69,7 +90,12 @@ const ModuleDetailPage = () => {
         ← Back to Modules
       </button>
       <div style={styles.header}>
-        <h2 style={styles.title}>🧪 Test Cases</h2>
+        <h2 style={styles.title}>
+          {(moduleMeta?.project?.name || "Project") +
+            " > " +
+            (moduleMeta?.name || "Module") +
+            " > Testcases"}
+        </h2>
         <button style={styles.addBtn} onClick={() => setShowModal(true)}>
           + New Test Case
         </button>

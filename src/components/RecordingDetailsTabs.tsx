@@ -20,6 +20,9 @@ type Step = {
   inputType?: string;
   checked?: boolean;
   fieldName?: string;
+  variableName?: string;
+  variableKind?: string;
+  variableValue?: any;
   [key: string]: any;
 };
 
@@ -77,6 +80,7 @@ interface RecordingDetailsTabsProps {
     videoUrl?: string | null;
   };
   onPythonScriptGenerated?: (script: string) => void;
+  onRuntimePathRequiredChange?: (required: boolean) => void;
   onTabChange?: (tab: TabKey) => void;
 }
 
@@ -448,17 +452,28 @@ function shouldSkipDuplicateStoreVariableStep(
 
   const prev = steps[index - 1];
   const prevAction = (prev?.action || prev?.type || "").toLowerCase();
-  if (!["input", "select", "check", "click"].includes(prevAction)) return false;
+
+  // Only dedupe store_variable against another store_variable
+  if (prevAction !== "store_variable") return false;
 
   const prevKey = getStepLocatorKey(prev);
   const curKey = getStepLocatorKey(step);
   if (!prevKey || !curKey || prevKey !== curKey) return false;
 
-  const prevVar = String(prev?.variableName || "").trim();
-  const curVar = String(step?.variableName || "").trim();
+  const prevVar = String(
+    prev?.variableName ?? prev?.contextMeta?.variableName ?? "",
+  ).trim();
 
+  const curVar = String(
+    step?.variableName ?? step?.contextMeta?.variableName ?? "",
+  ).trim();
   if (prevVar && curVar) return prevVar === curVar;
-  return true;
+
+  const prevVal = String(prev?.variableValue ?? prev?.value ?? "").trim();
+  const curVal = String(step?.variableValue ?? step?.value ?? "").trim();
+  if (prevVal && curVal) return prevVal === curVal;
+
+  return false;
 }
 
 function extractIdFromLocator(
@@ -552,6 +567,7 @@ const RecordingDetailsTabs: React.FC<RecordingDetailsTabsProps> = ({
   recording,
   onPythonScriptGenerated,
   onTabChange,
+  onRuntimePathRequiredChange,
 }) => {
   const [activeTab, setActiveTab] = useState<TabKey>("steps");
   const [locatorPref, setLocatorPref] = useState<LocatorPref>("relativeXPath");
@@ -603,6 +619,39 @@ const RecordingDetailsTabs: React.FC<RecordingDetailsTabsProps> = ({
       }),
     [steps, runtimePaths],
   );
+
+  const hasPendingRuntimePath = useMemo(() => {
+    return (steps || []).some((step, index) => {
+      const stepKey = step.stepId || String(index);
+      const targetTag = (step.targetTag || "").toLowerCase();
+      const inputType = (
+        step.inputType ||
+        step.contextMeta?.inputType ||
+        step.context?.inputType ||
+        ""
+      ).toLowerCase();
+
+      const isFileStep =
+        step.contextMeta?.requiresRuntimePath === true ||
+        step.context?.requiresRuntimePath === true ||
+        inputType === "file" ||
+        (targetTag === "input" && inputType === "file");
+
+      if (!isFileStep) return false;
+
+      const runtimePath =
+        runtimePaths[stepKey] ??
+        step.contextMeta?.runtimePath ??
+        step.context?.runtimePath ??
+        "";
+
+      return !String(runtimePath).trim();
+    });
+  }, [steps, runtimePaths]);
+
+  useEffect(() => {
+    onRuntimePathRequiredChange?.(hasPendingRuntimePath);
+  }, [hasPendingRuntimePath, onRuntimePathRequiredChange]);
 
   const pythonBaseScript = useMemo(
     () =>
@@ -756,12 +805,12 @@ function renderTabButton(
 const StepsTable: React.FC<{
   steps: Step[];
   locatorPref: LocatorPref;
-  runtimePaths: Record<number, string>;
+  runtimePaths: Record<string, string>;
   onRuntimePathChange: (stepKey: string, path: string) => void;
 }> = ({ steps, locatorPref, runtimePaths, onRuntimePathChange }) => {
-  const [editingPaths, setEditingPaths] = useState<Record<number, boolean>>({});
-  const [draftPaths, setDraftPaths] = useState<Record<number, string>>({});
-  const [savingPaths, setSavingPaths] = useState<Record<number, boolean>>({});
+  const [editingPaths, setEditingPaths] = useState<Record<string, boolean>>({});
+  const [draftPaths, setDraftPaths] = useState<Record<string, string>>({});
+  const [savingPaths, setSavingPaths] = useState<Record<string, boolean>>({});
 
   if (!steps.length)
     return <div style={styles.empty}>No steps recorded yet.</div>;
@@ -789,7 +838,9 @@ const StepsTable: React.FC<{
             const locator = getPreferredLocator(selector, locatorPref);
             const elementLabel = buildElementLabel(step.targetTag, selector);
             const selenium = generateStepSeleniumPreview(step, locatorPref);
-            const pageName = resolvePageName(step);
+            const actionLower = (step.action || step.type || "").toLowerCase();
+            const pageName =
+              actionLower === "store_variable" ? resolvePageName(step) : "-";
             const value =
               step.value ?? step.variableValue ?? step.buttonValue ?? null;
             const stepKey = step.stepId || String(index);
@@ -822,7 +873,7 @@ const StepsTable: React.FC<{
             };
 
             return (
-              <tr key={index} style={index % 2 === 0 ? {} : styles.rowAlt}>
+              <tr key={stepKey} style={index % 2 === 0 ? {} : styles.rowAlt}>
                 <td style={styles.td}>{index + 1}</td>
                 <td style={styles.td}>
                   {formatTime(step.timestamp ?? step.createdAt)}
@@ -880,10 +931,10 @@ const StepsTable: React.FC<{
                           if (step.stepId) {
                             const api = (await import("../api/axios")).default;
                             await api.patch(
-                              `/recordings/step/${step.stepId}/runtime-path`,
-                              {
-                                runtimePath: path,
-                              },
+                              "/recordings/step/" +
+                                step.stepId +
+                                "/runtime-path",
+                              { runtimePath: path },
                             );
                           }
                           onRuntimePathChange(stepKey, path);
@@ -949,85 +1000,69 @@ const StepsTable: React.FC<{
                                   padding: "2px 6px",
                                 }}
                               >
-                                ✏
+                                Edit
                               </button>
                             </div>
                           ) : (
-                            <div>
+                            <div style={{ display: "flex", gap: 6 }}>
                               <input
                                 type="text"
-                                autoFocus
-                                placeholder={`e.g. C:\\TestFiles\\${originalName}`}
                                 value={draftPaths[stepKey] ?? savedPath}
-                                onChange={(e) => {
+                                onChange={(e) =>
                                   setDraftPaths((p) => ({
                                     ...p,
                                     [stepKey]: e.target.value,
-                                  }));
-                                }}
+                                  }))
+                                }
+                                placeholder="C:/path/to/file.ext"
                                 style={{
-                                  width: "100%",
-                                  padding: "4px 8px",
-                                  backgroundColor: "#1e1e2e",
-                                  border: `1px solid ${draftPaths[stepKey] ? "#a6e3a1" : "#f38ba8"}`,
-                                  borderRadius: 4,
-                                  color: "#cdd6f4",
+                                  flex: 1,
+                                  minWidth: 160,
                                   fontSize: 11,
-                                  boxSizing: "border-box",
-                                  marginBottom: 4,
+                                  padding: "4px 6px",
+                                  borderRadius: 4,
+                                  border: "1px solid #45475a",
+                                  background: "#1e1e2e",
+                                  color: "#cdd6f4",
                                 }}
                               />
-                              <div style={{ display: "flex", gap: 4 }}>
-                                <button
-                                  type="button"
-                                  disabled={savingPaths[stepKey]}
-                                  onClick={handleSave}
-                                  style={{
-                                    background: "#a6e3a1",
-                                    border: "none",
-                                    borderRadius: 4,
-                                    color: "#1e1e2e",
-                                    cursor: "pointer",
-                                    fontSize: 10,
-                                    fontWeight: 600,
-                                    padding: "3px 10px",
-                                  }}
-                                >
-                                  {savingPaths[stepKey] ? "Saving…" : "Save"}
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setEditingPaths((p) => ({
-                                      ...p,
-                                      [stepKey]: false,
-                                    }))
-                                  }
-                                  style={{
-                                    background: "#45475a",
-                                    border: "none",
-                                    borderRadius: 4,
-                                    color: "#cdd6f4",
-                                    cursor: "pointer",
-                                    fontSize: 10,
-                                    padding: "3px 10px",
-                                  }}
-                                >
-                                  Cancel
-                                </button>
-                              </div>
-                            </div>
-                          )}
-
-                          {!savedPath && (
-                            <div
-                              style={{
-                                fontSize: 10,
-                                color: "#f38ba8",
-                                marginTop: 3,
-                              }}
-                            >
-                              ⚠ Required for execution
+                              <button
+                                type="button"
+                                onClick={handleSave}
+                                disabled={savingPaths[stepKey]}
+                                style={{
+                                  background: "#a6e3a1",
+                                  border: "none",
+                                  borderRadius: 4,
+                                  color: "#1e1e2e",
+                                  cursor: "pointer",
+                                  fontSize: 11,
+                                  padding: "2px 8px",
+                                  opacity: savingPaths[stepKey] ? 0.7 : 1,
+                                }}
+                              >
+                                {savingPaths[stepKey] ? "Saving..." : "Save"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setEditingPaths((p) => ({
+                                    ...p,
+                                    [stepKey]: false,
+                                  }))
+                                }
+                                style={{
+                                  background: "none",
+                                  border: "1px solid #45475a",
+                                  borderRadius: 4,
+                                  color: "#a6adc8",
+                                  cursor: "pointer",
+                                  fontSize: 11,
+                                  padding: "2px 8px",
+                                }}
+                              >
+                                Cancel
+                              </button>
                             </div>
                           )}
                         </div>
@@ -1035,13 +1070,9 @@ const StepsTable: React.FC<{
                     })()}
                 </td>
                 <td style={styles.td}>
-                  {action === "store_variable" ? (
-                    <span style={styles.pageLabel} title={step.pageUrl || ""}>
-                      {pageName}
-                    </span>
-                  ) : (
-                    <span style={styles.muted}>-</span>
-                  )}
+                  <span style={styles.pageLabel} title={step.pageUrl || ""}>
+                    {pageName}
+                  </span>
                 </td>
                 <td style={styles.td}>
                   <span
@@ -1209,9 +1240,12 @@ const VariableRow: React.FC<{
 
   const selector = normalizeSelector(v);
   const locator = getPreferredLocator(selector, locatorPref);
-  const value = v.value ?? "";
   const pageName = resolvePageName(v);
   const capture = getCapture(v);
+  const value =
+    v.value !== null && v.value !== undefined && String(v.value) !== ""
+      ? v.value
+      : (capture?.value ?? "");
 
   const fetchOperators = async () => {
     if (operators.length) {
@@ -1815,10 +1849,12 @@ function generatePythonStepWithVariable(
   }
 
   const namedVar = findNamedVariable(step, variables);
+  const stepVarName = String(
+    step.variableName ?? step.contextMeta?.variableName ?? "",
+  ).trim();
+
   const varName =
-    (step.variableName && String(step.variableName).trim()) ||
-    (namedVar && namedVar.name) ||
-    "auto_" + (index + 1);
+    stepVarName || (namedVar && namedVar.name) || "auto_" + (index + 1);
 
   const byExpr =
     model.locatorType === "xpath"
@@ -1845,21 +1881,9 @@ function generatePythonStepWithVariable(
       lines.push(
         '    Select(el).select_by_visible_text("' + escapePy(value) + '")',
       );
-      lines.push(
-        '    self.vars["' +
-          varName +
-          '"] = str("' +
-          escapePy(value) +
-          '").strip()',
-      );
     } else {
       lines.push("    el.clear()");
       lines.push('    el.send_keys("' + escapePy(value) + '")');
-      lines.push(
-        '    self.vars["' +
-          varName +
-          '"] = str(el.get_attribute("value") or "").strip()',
-      );
     }
 
     return lines;

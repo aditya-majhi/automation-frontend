@@ -17,10 +17,53 @@ interface Recording {
   createdAt: string;
 }
 
+const CollapsibleSection = ({
+  title,
+  subtitle,
+  defaultOpen = false,
+  titleColor = "#cdd6f4",
+  children,
+  rightAction,
+}: {
+  title: React.ReactNode;
+  subtitle?: string;
+  defaultOpen?: boolean;
+  titleColor?: string;
+  children: React.ReactNode;
+  rightAction?: React.ReactNode;
+}) => {
+  const [isOpen, setIsOpen] = useState(defaultOpen);
+
+  return (
+    <div style={styles.collapseCard}>
+      <button
+        type="button"
+        style={styles.collapseHeader}
+        onClick={() => setIsOpen((v) => !v)}
+      >
+        <div style={{ textAlign: "left" }}>
+          <div style={{ ...styles.collapseTitle, color: titleColor }}>
+            {isOpen ? "▼" : "▶"} {title}
+          </div>
+          {subtitle ? (
+            <div style={styles.collapseSubtitle}>{subtitle}</div>
+          ) : null}
+        </div>
+        {rightAction ? (
+          <div onClick={(e) => e.stopPropagation()}>{rightAction}</div>
+        ) : null}
+      </button>
+
+      {isOpen ? <div style={styles.collapseBody}>{children}</div> : null}
+    </div>
+  );
+};
+
 const TestCaseDetailPage = () => {
   const { testCaseId } = useParams<{ testCaseId: string }>();
   const navigate = useNavigate();
   const [recording, setRecording] = useState<Recording | null>(null);
+  const [testCaseName, setTestCaseName] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [recordingSuccess, setRecordingSuccess] = useState("");
@@ -32,6 +75,60 @@ const TestCaseDetailPage = () => {
   const [activeRecordingTab, setActiveRecordingTab] = useState<
     "steps" | "variables" | "selenium" | "video"
   >("steps");
+  const [runtimePathRequired, setRuntimePathRequired] = useState(false);
+
+  const getRecordingForDisplay = (r: Recording) => {
+    const steps = r.steps?.length ? r.steps : r.structuredSteps || [];
+    const variables = r.variables?.length
+      ? r.variables
+      : r.structuredVars || [];
+
+    return {
+      steps,
+      variables,
+      videoUrl: r.videoUrl,
+    };
+  };
+
+  const recordingDisplay = useMemo(
+    () =>
+      recording
+        ? getRecordingForDisplay(recording)
+        : { steps: [], variables: [], videoUrl: null },
+    [recording],
+  );
+
+  const hasInitialPendingRuntimePath = useMemo(() => {
+    if (!recording) return false;
+
+    const steps = recording.structuredSteps?.length
+      ? recording.structuredSteps
+      : recording.steps || [];
+
+    return steps.some((step: any, index: number) => {
+      const stepKey = step.stepId || String(index);
+      const targetTag = (step.targetTag || "").toLowerCase();
+      const inputType = (
+        step.inputType ||
+        step.contextMeta?.inputType ||
+        step.context?.inputType ||
+        ""
+      ).toLowerCase();
+
+      const isFileStep =
+        step.contextMeta?.requiresRuntimePath === true ||
+        step.context?.requiresRuntimePath === true ||
+        inputType === "file" ||
+        (targetTag === "input" && inputType === "file");
+
+      if (!isFileStep) return false;
+
+      const runtimePath =
+        step.contextMeta?.runtimePath ?? step.context?.runtimePath ?? "";
+
+      return !String(runtimePath).trim();
+    });
+  }, [recording]);
 
   const {
     status: extensionStatus,
@@ -40,6 +137,16 @@ const TestCaseDetailPage = () => {
     stopRecording,
     checkExtension,
   } = useExtension();
+
+  const fetchTestCaseMeta = async () => {
+    if (!testCaseId) return;
+    try {
+      const data = await testCaseService.getMeta(testCaseId);
+      setTestCaseName(data?.name || "");
+    } catch {
+      setTestCaseName("");
+    }
+  };
 
   const fetchRecording = async () => {
     if (!testCaseId) return;
@@ -107,6 +214,11 @@ const TestCaseDetailPage = () => {
   }, []);
 
   useEffect(() => {
+    setRuntimePathRequired(hasInitialPendingRuntimePath);
+  }, [hasInitialPendingRuntimePath]);
+
+  useEffect(() => {
+    fetchTestCaseMeta();
     fetchRecording();
     fetchScripts();
   }, [testCaseId]);
@@ -135,27 +247,6 @@ const TestCaseDetailPage = () => {
     await fetchScripts();
   };
 
-  const getRecordingForDisplay = (r: Recording) => {
-    const steps = r.steps?.length ? r.steps : r.structuredSteps || [];
-    const variables = r.variables?.length
-      ? r.variables
-      : r.structuredVars || [];
-
-    return {
-      steps,
-      variables,
-      videoUrl: r.videoUrl,
-    };
-  };
-
-  const recordingDisplay = useMemo(
-    () =>
-      recording
-        ? getRecordingForDisplay(recording)
-        : { steps: [], variables: [], videoUrl: null },
-    [recording],
-  );
-
   const assertionApi = useMemo(
     () => ({
       getAssertionOperators: testCaseService.getAssertionOperators,
@@ -171,7 +262,7 @@ const TestCaseDetailPage = () => {
       </button>
 
       <div style={styles.header}>
-        <h2 style={styles.title}>🎥 Recording</h2>
+        <h2 style={styles.title}>{testCaseName || "Testcase"}</h2>
       </div>
 
       {extensionStatus === "checking" && (
@@ -223,40 +314,45 @@ const TestCaseDetailPage = () => {
           </p>
         </div>
       ) : (
-        <div style={styles.card}>
-          <div style={styles.cardHeader}>
-            <div>
-              <div style={styles.cardTitle}>
-                🎬 {new Date(recording.createdAt).toLocaleString()}
-              </div>
-              <div style={styles.cardSub}>
-                {(recording.structuredSteps || recording.steps || []).length}{" "}
-                steps
-                {(recording.structuredVars || recording.variables || [])
-                  .length > 0
-                  ? ` · ${(recording.structuredVars || recording.variables || []).length} variables`
-                  : ""}
-                {recording.videoUrl ? " · 📹 Video" : ""}
-              </div>
-            </div>
-          </div>
-
-          <div style={styles.cardBody}>
-            <RecordingDetailsTabs
-              recording={recordingDisplay}
-              onPythonScriptGenerated={handlePythonScriptGenerated}
-              onTabChange={setActiveRecordingTab}
-            />
-          </div>
-        </div>
+        <CollapsibleSection
+          title={
+            <span style={styles.recordingTitleRow}>
+              <span>{new Date(recording.createdAt).toLocaleString()}</span>
+              {runtimePathRequired ? (
+                <span style={styles.pathRequiredBadge}>
+                  Original file path required
+                </span>
+              ) : null}
+            </span>
+          }
+          subtitle={
+            (recording.structuredSteps || recording.steps || []).length +
+            " steps" +
+            ((recording.structuredVars || recording.variables || []).length > 0
+              ? " · " +
+                (recording.structuredVars || recording.variables || []).length +
+                " variables"
+              : "") +
+            (recording.videoUrl ? " · Video" : "")
+          }
+          defaultOpen={false}
+        >
+          <RecordingDetailsTabs
+            recording={recordingDisplay}
+            onPythonScriptGenerated={handlePythonScriptGenerated}
+            onTabChange={setActiveRecordingTab}
+            onRuntimePathRequiredChange={setRuntimePathRequired}
+          />
+        </CollapsibleSection>
       )}
 
-      {finalScript && activeRecordingTab === "selenium" ? (
-        <div style={styles.finalScriptBox}>
-          <div style={styles.finalScriptHeader}>
-            <span style={styles.finalScriptTitle}>
-              Final Script with Assertions
-            </span>
+      {finalScript ? (
+        <CollapsibleSection
+          title="Final Script With Assertions"
+          subtitle="Generated script ready for execution"
+          defaultOpen={false}
+          titleColor="#a6e3a1"
+          rightAction={
             <button
               type="button"
               style={styles.copyBtn}
@@ -264,9 +360,10 @@ const TestCaseDetailPage = () => {
             >
               Copy
             </button>
-          </div>
+          }
+        >
           <pre style={styles.finalScriptCode}>{finalScript}</pre>
-        </div>
+        </CollapsibleSection>
       ) : null}
     </div>
   );
@@ -418,6 +515,53 @@ const styles: Record<string, React.CSSProperties> = {
     margin: 0,
     maxHeight: 420,
     overflowY: "auto",
+  },
+  collapseCard: {
+    backgroundColor: "#313244",
+    borderRadius: "10px",
+    border: "1px solid #45475a",
+    overflow: "hidden",
+    marginBottom: 12,
+  },
+  collapseHeader: {
+    width: "100%",
+    border: "none",
+    background: "transparent",
+    color: "#cdd6f4",
+    cursor: "pointer",
+    padding: "14px 16px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    borderBottom: "1px solid #45475a",
+  },
+  collapseTitle: {
+    fontSize: 14,
+    fontWeight: 700,
+  },
+  collapseSubtitle: {
+    fontSize: 12,
+    color: "#6c7086",
+    marginTop: 4,
+  },
+  collapseBody: {
+    padding: "0 16px 16px",
+  },
+  recordingTitleRow: {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: 8,
+    flexWrap: "wrap",
+  },
+  pathRequiredBadge: {
+    fontSize: 11,
+    fontWeight: 700,
+    color: "#f9e2af",
+    border: "1px solid #f9e2af55",
+    backgroundColor: "#f9e2af1a",
+    borderRadius: 999,
+    padding: "2px 8px",
+    lineHeight: 1.4,
   },
 };
 

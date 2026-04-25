@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { moduleService } from "../api/services";
+import { moduleService, projectService } from "../api/services";
 import Card from "../components/Card";
 import Modal from "../components/Modal";
 import FormInput from "../components/FormInput";
@@ -16,16 +16,29 @@ const ProjectDetailPage = () => {
   const { projectId } = useParams<{ projectId: string }>();
   const navigate = useNavigate();
   const [modules, setModules] = useState<Module[]>([]);
+  const [projectName, setProjectName] = useState("");
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [error, setError] = useState("");
 
+  const fetchProjectMeta = async () => {
+    if (!projectId) return;
+    try {
+      const data = await projectService.getById(projectId);
+      setProjectName(data?.name || "");
+    } catch {
+      setProjectName("");
+    }
+  };
+
   const fetchModules = async () => {
     if (!projectId) return;
     try {
       const data = await moduleService.getByProject(projectId);
+      console.log({ data });
+
       setModules(data);
     } catch {
       setError("Failed to fetch modules");
@@ -35,6 +48,7 @@ const ProjectDetailPage = () => {
   };
 
   useEffect(() => {
+    fetchProjectMeta();
     fetchModules();
   }, [projectId]);
 
@@ -69,7 +83,9 @@ const ProjectDetailPage = () => {
         ← Back to Projects
       </button>
       <div style={styles.header}>
-        <h2 style={styles.title}>🧩 Modules</h2>
+        <h2 style={styles.title}>
+          {(projectName || "Project") + " > Modules"}
+        </h2>
         <button style={styles.addBtn} onClick={() => setShowModal(true)}>
           + New Module
         </button>
