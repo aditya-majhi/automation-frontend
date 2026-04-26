@@ -13,6 +13,10 @@ type TestCase = {
   name: string;
   moduleId?: string;
   assertions?: unknown;
+  hasSavedExcel?: boolean;
+  lastExcelUploadedAt?: string | null;
+  lastExcelName?: string | null;
+  lastExcelSizeBytes?: number | null;
 };
 
 const STATUS_COLORS: Record<string, string> = {
@@ -101,6 +105,10 @@ export default function ExecutionPage() {
   const [pollCount, setPollCount] = useState(0);
   const [isPolling, setIsPolling] = useState(false);
   const [lastPolledAt, setLastPolledAt] = useState("");
+
+  //helper to check data availability
+  const hasDataSource = (tc: TestCase) =>
+    Boolean(filesByTc[tc.id]) || Boolean(tc.hasSavedExcel);
 
   useEffect(() => {
     projectService
@@ -221,8 +229,7 @@ export default function ExecutionPage() {
   ).length;
 
   const allSelectedFilesReady =
-    selectedCases.length > 0 &&
-    selectedCases.every((tc) => Boolean(filesByTc[tc.id]));
+    selectedCases.length > 0 && selectedCases.every((tc) => hasDataSource(tc));
 
   const removeFilesForTestCases = (testCaseIds: string[]) => {
     if (!testCaseIds.length) return;
@@ -757,6 +764,21 @@ export default function ExecutionPage() {
                         style={{ display: "none" }}
                       />
                     </label>
+                    <div
+                      style={{ marginTop: 8, fontSize: 12, color: "#a6adc8" }}
+                    >
+                      {tc.hasSavedExcel ? (
+                        <span>
+                          Saved Excel available
+                          {tc.lastExcelName ? `: ${tc.lastExcelName}` : ""}
+                          {tc.lastExcelUploadedAt
+                            ? ` (last uploaded ${new Date(tc.lastExcelUploadedAt).toLocaleString()})`
+                            : ""}
+                        </span>
+                      ) : (
+                        <span style={{ color: "#fab387" }}>No saved Excel</span>
+                      )}
+                    </div>
                   </div>
                   {uploaded && (
                     <div style={styles.uploadedName}>✓ {uploaded.name}</div>

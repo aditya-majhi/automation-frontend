@@ -272,7 +272,7 @@ export const executionService = {
     executionId?: string;
     runConfig?: { timeoutSec?: number };
     testCaseIds: string[];
-    filesByTestCaseId: Record<string, File>;
+    filesByTestCaseId: Record<string, File | undefined>;
   }) => {
     const form = new FormData();
     form.append("testCaseIds", JSON.stringify(payload.testCaseIds));
@@ -289,13 +289,11 @@ export const executionService = {
     for (const testCaseId of payload.testCaseIds) {
       const file = payload.filesByTestCaseId[testCaseId];
       if (!file) continue;
-
       form.append("files", file);
       form.append("fileTestCaseIds", testCaseId);
     }
 
     const res = await api.post("/executions/start", form);
-
     return res.data.data;
   },
 
