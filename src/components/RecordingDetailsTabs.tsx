@@ -41,6 +41,9 @@ type Variable = {
   targetTag?: string;
   inputType?: string;
   enumValues?: Array<{ value: string; label: string }> | null;
+  selectedValue?: string | null;
+  selectedValues?: string[] | null;
+  isMultiSelect?: boolean;
   tableRowIndex?: number | null;
   tableColumnIndex?: number | null;
   tableColumnHeader?: string | null;
@@ -1237,11 +1240,15 @@ const VariableRow: React.FC<{
   const contextType = resolveContext(v);
   const ctxInfo = CONTEXT_ICONS[contextType] || CONTEXT_ICONS.formField;
   const ctxMeta = getContextMeta(v);
+  const capture = getCapture(v);
+  const displayValue =
+    Array.isArray(v.selectedValues) && v.selectedValues.length
+      ? v.selectedValues.join(", ")
+      : (v.selectedValue ?? capture?.value ?? v.value ?? "");
 
   const selector = normalizeSelector(v);
   const locator = getPreferredLocator(selector, locatorPref);
   const pageName = resolvePageName(v);
-  const capture = getCapture(v);
   const value =
     v.value !== null && v.value !== undefined && String(v.value) !== ""
       ? v.value
@@ -1350,21 +1357,34 @@ const VariableRow: React.FC<{
             {contextDetail}
           </div>
         )}
-        {v.enumValues &&
-          Array.isArray(v.enumValues) &&
-          v.enumValues.length > 0 && (
-            <div style={{ fontSize: 10, color: "#6c7086", marginTop: 2 }}>
-              Options:{" "}
-              {v.enumValues.map((e: any) => e.label || e.value).join(", ")}
+        {v.enumValues && Array.isArray(v.enumValues) ? (
+          <div style={{ marginTop: 8, fontSize: 11, color: "#a6adc8" }}>
+            <strong>Selected:</strong>{" "}
+            {Array.isArray(v.selectedValues) && v.selectedValues.length
+              ? v.selectedValues.join(", ")
+              : v.selectedValue || "(none)"}
+            <div
+              style={{
+                marginTop: 4,
+                fontSize: 10,
+                color: "#6c7086",
+                maxHeight: 80,
+                overflow: "auto",
+              }}
+            >
+              <em>Options:</em> {v.enumValues.map((e) => e.label).join(", ")}
             </div>
-          )}
+          </div>
+        ) : null}
       </td>
       <td style={styles.td}>
-        {value != null && value !== "" ? (
-          <div>{String(value)}</div>
-        ) : (
-          <span style={styles.muted}>-</span>
-        )}
+        <td style={styles.td}>
+          {displayValue != null && String(displayValue) !== "" ? (
+            <div>{String(displayValue)}</div>
+          ) : (
+            <span style={{ color: "#6c7086" }}>—</span>
+          )}
+        </td>
         {capture && (capture.text || capture.value != null) && (
           <div style={styles.captureBlock}>
             {capture.text && (

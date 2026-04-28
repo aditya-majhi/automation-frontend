@@ -17,6 +17,19 @@ interface Recording {
   createdAt: string;
 }
 
+interface TestCaseMeta {
+  id: string;
+  name: string;
+  module?: {
+    id: string;
+    name: string;
+    project?: {
+      id: string;
+      name: string;
+    };
+  };
+}
+
 const CollapsibleSection = ({
   title,
   subtitle,
@@ -63,7 +76,7 @@ const TestCaseDetailPage = () => {
   const { testCaseId } = useParams<{ testCaseId: string }>();
   const navigate = useNavigate();
   const [recording, setRecording] = useState<Recording | null>(null);
-  const [testCaseName, setTestCaseName] = useState("");
+  const [testCaseMeta, setTestCaseMeta] = useState<TestCaseMeta | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [recordingSuccess, setRecordingSuccess] = useState("");
@@ -142,9 +155,9 @@ const TestCaseDetailPage = () => {
     if (!testCaseId) return;
     try {
       const data = await testCaseService.getMeta(testCaseId);
-      setTestCaseName(data?.name || "");
+      setTestCaseMeta(data || null);
     } catch {
-      setTestCaseName("");
+      setTestCaseMeta(null);
     }
   };
 
@@ -262,7 +275,13 @@ const TestCaseDetailPage = () => {
       </button>
 
       <div style={styles.header}>
-        <h2 style={styles.title}>{testCaseName || "Testcase"}</h2>
+        <h2 style={styles.title}>
+          {(testCaseMeta?.module?.project?.name || "Project") +
+            " > " +
+            (testCaseMeta?.module?.name || "Module") +
+            " > " +
+            (testCaseMeta?.name || "Testcase")}
+        </h2>
       </div>
 
       {extensionStatus === "checking" && (

@@ -18,12 +18,27 @@ interface Project {
 const ProjectsPage = () => {
   const { isAdmin } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
+  const [editTarget, setEditTarget] = useState<Project | null>(null);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [error, setError] = useState("");
   const navigate = useNavigate();
+
+  const openCreateModal = () => {
+    setEditTarget(null);
+    setName("");
+    setDescription("");
+    setShowModal(true);
+  };
+
+  const openEditModal = (item: Project) => {
+    setEditTarget(item);
+    setName(item.name || "");
+    setDescription(item.description || "");
+    setShowModal(true);
+  };
 
   const fetchProjects = async () => {
     try {
@@ -54,6 +69,24 @@ const ProjectsPage = () => {
       await fetchProjects();
     } catch {
       setError("Failed to create project");
+    }
+  };
+
+  const handleUpdate = async () => {
+    if (!editTarget || !name.trim()) return;
+    try {
+      setError("");
+      await projectService.update(editTarget.id, {
+        name: name.trim(),
+        description: description.trim() || null,
+      });
+      setShowModal(false);
+      setEditTarget(null);
+      setName("");
+      setDescription("");
+      await fetchProjects();
+    } catch {
+      setError("Failed to update project");
     }
   };
 
@@ -88,7 +121,7 @@ const ProjectsPage = () => {
       <div style={styles.header}>
         <h2 style={styles.title}>📁 Projects</h2>
         {isAdmin && (
-          <button style={styles.addBtn} onClick={() => setShowModal(true)}>
+          <button style={styles.addBtn} onClick={openCreateModal}>
             + New Project
           </button>
         )}
@@ -111,6 +144,7 @@ const ProjectsPage = () => {
               project.description ||
               new Date(project.createdAt).toLocaleDateString()
             }
+            onEdit={isAdmin ? () => openEditModal(project) : undefined}
             onDelete={isAdmin ? () => handleDelete(project) : undefined}
             onClick={() => navigate(`/projects/${project.id}`)}
           />
@@ -118,7 +152,13 @@ const ProjectsPage = () => {
       )}
 
       {showModal && isAdmin && (
-        <Modal title="New Project" onClose={() => setShowModal(false)}>
+        <Modal
+          title={editTarget ? "Edit Project" : "New Project"}
+          onClose={() => {
+            setShowModal(false);
+            setEditTarget(null);
+          }}
+        >
           <FormInput
             label="Project Name"
             value={name}
@@ -131,8 +171,11 @@ const ProjectsPage = () => {
             onChange={setDescription}
             placeholder="What does this project do?"
           />
-          <button style={styles.addBtn} onClick={handleCreate}>
-            Create Project
+          <button
+            style={styles.addBtn}
+            onClick={editTarget ? handleUpdate : handleCreate}
+          >
+            {editTarget ? "Update Project" : "Create Project"}
           </button>
         </Modal>
       )}

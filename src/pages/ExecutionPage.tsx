@@ -72,6 +72,16 @@ function renderAssertions(assertionsJson: unknown) {
   );
 }
 
+//Helper function for AI summary formatting
+function formatAiSummary(text: unknown): string {
+  const raw = String(text || "");
+  return raw
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/^#+\s*/gm, "")
+    .replace(/^\s*-\s*/gm, "• ")
+    .trim();
+}
+
 const uniqueById = <T extends { id: string }>(items: T[]): T[] => {
   const map = new Map<string, T>();
   for (const item of items) map.set(item.id, item);
@@ -105,6 +115,8 @@ export default function ExecutionPage() {
   const [pollCount, setPollCount] = useState(0);
   const [isPolling, setIsPolling] = useState(false);
   const [lastPolledAt, setLastPolledAt] = useState("");
+
+  const progress = statusData?.progress || null;
 
   //helper to check data availability
   const hasDataSource = (tc: TestCase) =>
@@ -507,6 +519,8 @@ export default function ExecutionPage() {
   const results: any[] =
     statusData?.results || statusData?.result?.results || [];
 
+  const formattedSummary = formatAiSummary(summary);
+
   return (
     <div style={styles.page}>
       <div style={styles.hero}>
@@ -794,6 +808,15 @@ export default function ExecutionPage() {
         <div style={styles.pollBanner}>
           <span style={styles.pulseDot} />
           Polling for results · {pollCount} checks
+          {progress?.currentTestCaseName ? (
+            <span>
+              {" "}
+              · Running: {progress.currentTestCaseName}
+              {progress.currentRow
+                ? ` (Row ${progress.currentRow}/${progress.totalRowsInCase || "?"})`
+                : ""}
+            </span>
+          ) : null}
           {lastPolledAt && <span> · Last: {lastPolledAt}</span>}
         </div>
       )}
@@ -829,7 +852,9 @@ export default function ExecutionPage() {
           {summary && (
             <div style={styles.summaryCard}>
               <div style={styles.summaryTitle}>AI Summary</div>
-              <p style={styles.summaryText}>{summary}</p>
+              <div style={{ ...styles.summaryText, whiteSpace: "pre-wrap" }}>
+                {formattedSummary}
+              </div>
             </div>
           )}
 

@@ -17,11 +17,26 @@ const ProjectDetailPage = () => {
   const navigate = useNavigate();
   const [modules, setModules] = useState<Module[]>([]);
   const [projectName, setProjectName] = useState("");
+  const [editTarget, setEditTarget] = useState<Module | null>(null);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [error, setError] = useState("");
+
+  const openCreateModal = () => {
+    setEditTarget(null);
+    setName("");
+    setDescription("");
+    setShowModal(true);
+  };
+
+  const openEditModal = (moduleItem: Module) => {
+    setEditTarget(moduleItem);
+    setName(moduleItem.name || "");
+    setDescription(moduleItem.description || "");
+    setShowModal(true);
+  };
 
   const fetchProjectMeta = async () => {
     if (!projectId) return;
@@ -37,8 +52,6 @@ const ProjectDetailPage = () => {
     if (!projectId) return;
     try {
       const data = await moduleService.getByProject(projectId);
-      console.log({ data });
-
       setModules(data);
     } catch {
       setError("Failed to fetch modules");
@@ -65,6 +78,24 @@ const ProjectDetailPage = () => {
     }
   };
 
+  const handleUpdate = async () => {
+    if (!editTarget || !name.trim()) return;
+    try {
+      setError("");
+      await moduleService.update(editTarget.id, {
+        name: name.trim(),
+        description: description.trim() || null,
+      });
+      setShowModal(false);
+      setEditTarget(null);
+      setName("");
+      setDescription("");
+      await fetchModules();
+    } catch {
+      setError("Failed to update module");
+    }
+  };
+
   const handleDeleteModule = async (moduleId: string) => {
     if (!window.confirm("Delete this module and all its test cases?")) return;
 
@@ -86,7 +117,7 @@ const ProjectDetailPage = () => {
         <h2 style={styles.title}>
           {(projectName || "Project") + " > Modules"}
         </h2>
-        <button style={styles.addBtn} onClick={() => setShowModal(true)}>
+        <button style={styles.addBtn} onClick={openCreateModal}>
           + New Module
         </button>
       </div>
@@ -105,6 +136,7 @@ const ProjectDetailPage = () => {
             subtitle={
               m.description || new Date(m.createdAt).toLocaleDateString()
             }
+            onEdit={() => openEditModal(m)}
             onDelete={() => handleDeleteModule(m.id)}
             onClick={() => navigate(`/modules/${m.id}`)}
           />
@@ -112,7 +144,13 @@ const ProjectDetailPage = () => {
       )}
 
       {showModal && (
-        <Modal title="New Module" onClose={() => setShowModal(false)}>
+        <Modal
+          title={editTarget ? "Edit Module" : "New Module"}
+          onClose={() => {
+            setShowModal(false);
+            setEditTarget(null);
+          }}
+        >
           <FormInput
             label="Module Name"
             value={name}
@@ -125,8 +163,11 @@ const ProjectDetailPage = () => {
             onChange={setDescription}
             placeholder="What does this module test?"
           />
-          <button style={styles.addBtn} onClick={handleCreate}>
-            Create Module
+          <button
+            style={styles.addBtn}
+            onClick={editTarget ? handleUpdate : handleCreate}
+          >
+            {editTarget ? "Update Module" : "Create Module"}
           </button>
         </Modal>
       )}

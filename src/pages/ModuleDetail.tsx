@@ -26,11 +26,26 @@ const ModuleDetailPage = () => {
   const navigate = useNavigate();
   const [moduleMeta, setModuleMeta] = useState<ModuleMeta | null>(null);
   const [testCases, setTestCases] = useState<TestCase[]>([]);
+  const [editTarget, setEditTarget] = useState<TestCase | null>(null);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [error, setError] = useState("");
+
+  const openCreateModal = () => {
+    setEditTarget(null);
+    setName("");
+    setDescription("");
+    setShowModal(true);
+  };
+
+  const openEditModal = (testCase: TestCase) => {
+    setEditTarget(testCase);
+    setName(testCase.name || "");
+    setDescription(testCase.description || "");
+    setShowModal(true);
+  };
 
   const fetchModuleMeta = async () => {
     if (!moduleId) return;
@@ -72,6 +87,24 @@ const ModuleDetailPage = () => {
     }
   };
 
+  const handleUpdate = async () => {
+    if (!editTarget || !name.trim()) return;
+    try {
+      setError("");
+      await testCaseService.updateMeta(editTarget.id, {
+        name: name.trim(),
+        description: description.trim() || null,
+      });
+      setShowModal(false);
+      setEditTarget(null);
+      setName("");
+      setDescription("");
+      await fetchTestCases();
+    } catch {
+      setError("Failed to update test case");
+    }
+  };
+
   const handleDeleteTestCase = async (id: string) => {
     if (!window.confirm("Delete this test case?")) return;
 
@@ -96,7 +129,7 @@ const ModuleDetailPage = () => {
             (moduleMeta?.name || "Module") +
             " > Testcases"}
         </h2>
-        <button style={styles.addBtn} onClick={() => setShowModal(true)}>
+        <button style={styles.addBtn} onClick={openCreateModal}>
           + New Test Case
         </button>
       </div>
@@ -115,6 +148,7 @@ const ModuleDetailPage = () => {
             subtitle={
               tc.description || new Date(tc.createdAt).toLocaleDateString()
             }
+            onEdit={() => openEditModal(tc)}
             onDelete={() => handleDeleteTestCase(tc.id)}
             onClick={() => navigate(`/testcases/${tc.id}`)}
           />
@@ -122,7 +156,13 @@ const ModuleDetailPage = () => {
       )}
 
       {showModal && (
-        <Modal title="New Test Case" onClose={() => setShowModal(false)}>
+        <Modal
+          title={editTarget ? "Edit Test Case" : "New Test Case"}
+          onClose={() => {
+            setShowModal(false);
+            setEditTarget(null);
+          }}
+        >
           <FormInput
             label="Test Case Name"
             value={name}
@@ -135,8 +175,11 @@ const ModuleDetailPage = () => {
             onChange={setDescription}
             placeholder="What does this test verify?"
           />
-          <button style={styles.addBtn} onClick={handleCreate}>
-            Create Test Case
+          <button
+            style={styles.addBtn}
+            onClick={editTarget ? handleUpdate : handleCreate}
+          >
+            {editTarget ? "Update Test Case" : "Create Test Case"}
           </button>
         </Modal>
       )}

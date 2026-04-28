@@ -40,6 +40,13 @@ export const projectService = {
     const res = await api.post("/projects", { name, description });
     return res.data.data;
   },
+  update: async (
+    id: string,
+    payload: { name?: string; description?: string | null },
+  ) => {
+    const res = await api.patch(`/projects/${id}`, payload);
+    return res.data.data;
+  },
   getById: async (id: string) => {
     const res = await api.get(`/projects/${id}`);
     return res.data.data;
@@ -64,6 +71,13 @@ export const moduleService = {
     const res = await api.post("/modules", { name, projectId, description });
     return res.data.data;
   },
+  update: async (
+    moduleId: string,
+    payload: { name?: string; description?: string | null },
+  ) => {
+    const res = await api.patch(`/modules/${moduleId}`, payload);
+    return res.data.data;
+  },
   delete: async (moduleId: string) => {
     const res = await api.delete("/modules/" + moduleId);
     return res.data.data;
@@ -82,6 +96,13 @@ export const testCaseService = {
   },
   create: async (name: string, moduleId: string, description?: string) => {
     const res = await api.post("/testcases", { name, moduleId, description });
+    return res.data.data;
+  },
+  updateMeta: async (
+    testCaseId: string,
+    payload: { name?: string; description?: string | null },
+  ) => {
+    const res = await api.patch(`/testcases/${testCaseId}`, payload);
     return res.data.data;
   },
   delete: async (testCaseId: string) => {

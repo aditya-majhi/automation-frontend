@@ -4,11 +4,19 @@ interface CardProps {
   title: string;
   subtitle?: string;
   onDelete?: () => void;
+  onEdit?: () => void;
   onClick?: () => void;
   children?: ReactNode;
 }
 
-const Card = ({ title, subtitle, onDelete, onClick, children }: CardProps) => {
+const Card = ({
+  title,
+  subtitle,
+  onDelete,
+  onEdit,
+  onClick,
+  children,
+}: CardProps) => {
   return (
     <div style={styles.card}>
       <div style={styles.header} onClick={onClick}>
@@ -16,16 +24,32 @@ const Card = ({ title, subtitle, onDelete, onClick, children }: CardProps) => {
           <div style={styles.title}>{title}</div>
           {subtitle && <div style={styles.subtitle}>{subtitle}</div>}
         </div>
-        {onDelete && (
-          <button
-            style={styles.deleteBtn}
-            onClick={(e) => {
-              e.stopPropagation();
-              onDelete();
-            }}
-          >
-            🗑
-          </button>
+
+        {(onEdit || onDelete) && (
+          <div style={styles.actions}>
+            {onEdit && (
+              <button
+                style={styles.editBtn}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onEdit();
+                }}
+              >
+                ✎
+              </button>
+            )}
+            {onDelete && (
+              <button
+                style={styles.deleteBtn}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onDelete();
+                }}
+              >
+                🗑
+              </button>
+            )}
+          </div>
         )}
       </div>
       {children && <div style={styles.body}>{children}</div>}
@@ -56,6 +80,18 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: "12px",
     color: "#6c7086",
     marginTop: "4px",
+  },
+  actions: {
+    display: "flex",
+    alignItems: "center",
+    gap: "8px",
+  },
+  editBtn: {
+    background: "transparent",
+    border: "none",
+    cursor: "pointer",
+    fontSize: "16px",
+    color: "#cba6f7",
   },
   deleteBtn: {
     background: "transparent",
