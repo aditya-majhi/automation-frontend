@@ -19,6 +19,18 @@ type TestCase = {
   lastExcelSizeBytes?: number | null;
 };
 
+type CaseProgress = {
+  testCaseId: string;
+  name: string;
+  status: "queued" | "running" | "completed" | "failed";
+  currentRow: number;
+  totalRows: number;
+  passCount: number;
+  failCount: number;
+  startedAt?: string | null;
+  completedAt?: string | null;
+};
+
 const STATUS_COLORS: Record<string, string> = {
   completed: "#a6e3a1",
   failed: "#f38ba8",
@@ -117,6 +129,10 @@ export default function ExecutionPage() {
   const [lastPolledAt, setLastPolledAt] = useState("");
 
   const progress = statusData?.progress || null;
+
+  const caseProgress: CaseProgress[] = Array.isArray(statusData?.caseProgress)
+    ? statusData.caseProgress
+    : [];
 
   //helper to check data availability
   const hasDataSource = (tc: TestCase) =>
@@ -804,7 +820,7 @@ export default function ExecutionPage() {
         </div>
       )}
 
-      {executionId && isPolling && (
+      {/* {executionId && isPolling && (
         <div style={styles.pollBanner}>
           <span style={styles.pulseDot} />
           Polling for results · {pollCount} checks
@@ -818,6 +834,44 @@ export default function ExecutionPage() {
             </span>
           ) : null}
           {lastPolledAt && <span> · Last: {lastPolledAt}</span>}
+        </div>
+      )} */}
+      {executionId && caseProgress.length > 0 && (
+        <div style={styles.caseBannerStack}>
+          {caseProgress.map((cp) => {
+            const isRunning = cp.status === "running";
+            const isCompleted = cp.status === "completed";
+            const isFailed = cp.status === "failed";
+
+            const color = isRunning
+              ? "#89b4fa"
+              : isCompleted
+                ? "#a6e3a1"
+                : isFailed
+                  ? "#f38ba8"
+                  : "#89dceb";
+
+            return (
+              <div
+                key={cp.testCaseId}
+                style={{
+                  ...styles.pollBanner,
+                  backgroundColor: color + "15",
+                  borderColor: color + "50",
+                  color,
+                }}
+              >
+                {isRunning ? <span style={styles.pulseDot} /> : null}
+                <strong>{cp.name}</strong> · {cp.status.toUpperCase()}
+                {cp.totalRows > 0
+                  ? ` · Row ${cp.currentRow}/${cp.totalRows}`
+                  : ""}
+                {isCompleted || isFailed
+                  ? ` · Pass ${cp.passCount} · Fail ${cp.failCount}`
+                  : ""}
+              </div>
+            );
+          })}
         </div>
       )}
 
@@ -858,38 +912,55 @@ export default function ExecutionPage() {
             </div>
           )}
 
-          {results.length > 0 && (
-            <div style={styles.resultsTable}>
-              {results.map((r: any, i: number) => {
-                const passed = r.status === "passed";
-                return (
-                  <div
-                    key={i}
-                    style={{
-                      ...styles.resultRow,
-                      borderLeftColor: passed ? "#a6e3a1" : "#f38ba8",
-                    }}
-                  >
-                    <span
-                      style={{
-                        color: passed ? "#a6e3a1" : "#f38ba8",
-                        fontWeight: 700,
-                        minWidth: "40px",
-                      }}
-                    >
-                      {passed ? "PASS" : "FAIL"}
-                    </span>
-                    <span style={styles.resultName}>
-                      {r.testCaseName || r.testCaseId}
-                    </span>
-                    {r.error && (
-                      <span style={styles.resultError}>{r.error}</span>
-                    )}
+          {Array.isArray(statusData?.result?.cases) &&
+            statusData.result.cases.length > 0 && (
+              <div style={styles.caseResultStack}>
+                {statusData.result.cases.map((c: any) => (
+                  <div key={c.testCaseId} style={styles.caseResultCard}>
+                    <div style={styles.caseResultHeader}>
+                      <div style={styles.caseResultTitle}>{c.name}</div>
+                      <div style={styles.caseResultMeta}>
+                        PASS {c.passCount} · FAIL {c.failCount}
+                      </div>
+                    </div>
+
+                    <div style={styles.resultsTable}>
+                      {(c.rows || []).map((r: any) => {
+                        const passed =
+                          String(r.status).toUpperCase() === "PASS";
+                        return (
+                          <div
+                            key={r.rowNumber}
+                            style={{
+                              ...styles.resultRow,
+                              borderLeftColor: passed ? "#a6e3a1" : "#f38ba8",
+                            }}
+                          >
+                            <span
+                              style={{
+                                color: passed ? "#a6e3a1" : "#f38ba8",
+                                fontWeight: 700,
+                                minWidth: "58px",
+                              }}
+                            >
+                              {passed ? "PASS" : "FAIL"}
+                            </span>
+                            <span style={styles.resultName}>
+                              Row {r.rowNumber}
+                            </span>
+                            {!passed && r.stderr ? (
+                              <span style={styles.resultError}>
+                                {String(r.stderr).slice(0, 220)}
+                              </span>
+                            ) : null}
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
-                );
-              })}
-            </div>
-          )}
+                ))}
+              </div>
+            )}
 
           <button
             type="button"
@@ -1322,5 +1393,37 @@ const styles: Record<string, React.CSSProperties> = {
     textAlign: "center",
     padding: 0,
     flexShrink: 0,
+  },
+  caseBannerStack: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 10,
+    marginBottom: 14,
+  },
+  caseResultStack: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 12,
+  },
+  caseResultCard: {
+    border: "1px solid #313244",
+    borderRadius: 10,
+    backgroundColor: "#11111b",
+    padding: 12,
+  },
+  caseResultHeader: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    marginBottom: 8,
+  },
+  caseResultTitle: {
+    fontSize: 14,
+    fontWeight: 700,
+    color: "#cdd6f4",
+  },
+  caseResultMeta: {
+    fontSize: 12,
+    color: "#a6adc8",
   },
 };

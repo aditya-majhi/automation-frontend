@@ -1,4 +1,4 @@
-import axios, { AxiosError,  type InternalAxiosRequestConfig } from "axios";
+import axios, { AxiosError, type InternalAxiosRequestConfig } from "axios";
 
 type RetryableRequestConfig = InternalAxiosRequestConfig & {
   _retry?: boolean;
@@ -12,6 +12,8 @@ const clearAuthAndRedirect = () => {
   localStorage.removeItem("token");
   localStorage.removeItem("refreshToken");
   localStorage.removeItem("user");
+  localStorage.removeItem("accessTokenExpiresAt");
+  window.dispatchEvent(new CustomEvent("auth:forced-logout"));
   window.location.href = "/login";
 };
 
@@ -89,10 +91,13 @@ api.interceptors.response.use(
       );
 
       const newToken =
-        (refreshRes.data && (refreshRes.data.token || refreshRes.data.data?.token)) || "";
+        (refreshRes.data &&
+          (refreshRes.data.token || refreshRes.data.data?.token)) ||
+        "";
       const newRefreshToken =
         (refreshRes.data &&
-          (refreshRes.data.refreshToken || refreshRes.data.data?.refreshToken)) ||
+          (refreshRes.data.refreshToken ||
+            refreshRes.data.data?.refreshToken)) ||
         "";
 
       if (!newToken || !newRefreshToken) {
