@@ -263,6 +263,13 @@ function locatorQuality(type: "xpath" | "css", locator: string): number {
   if (type === "xpath" && /@name=/.test(l)) score += 20;
   if (/href|@href/.test(l)) score += 18;
   if (type === "xpath" && /normalize-space\(\)=/.test(l)) score += 12;
+  if (
+    type === "xpath" &&
+    /normalize-space\(@class\)/.test(l) &&
+    !/@id=|@name=|data-testid|data-test|data-qa|normalize-space\(\)=/.test(l)
+  ) {
+    score -= 35;
+  }
 
   if (l.length > 8 && l.length < 180) score += 6;
   return score;
@@ -400,9 +407,103 @@ function isDiscardableCandidate(
   return false;
 }
 
+function prefOrder(pref: LocatorPref): Array<"xpath" | "css"> {
+  if (pref === "css") return ["css", "xpath"];
+  return ["xpath", "css"];
+}
+
+function prefRank(locatorType: "xpath" | "css", pref: LocatorPref): number {
+  const order = prefOrder(pref);
+  const idx = order.indexOf(locatorType);
+  return idx === -1 ? 99 : idx;
+}
+
+function mapRecorderKindToLocatorType(
+  kind: string,
+): { locatorType: "xpath" | "css"; normalizedKind: LocatorPref } | null {
+  const k = String(kind || "").toLowerCase();
+  if (k === "css") return { locatorType: "css", normalizedKind: "css" };
+  if (k === "relativexpath")
+    return { locatorType: "xpath", normalizedKind: "relativeXPath" };
+  if (k === "xpath") return { locatorType: "xpath", normalizedKind: "xpath" };
+  return null;
+}
+
+function getRecorderLocatorCandidates(
+  step: Step,
+  pref: LocatorPref,
+): Array<{
+  locatorType: "xpath" | "css";
+  locator: string;
+  confidence: number;
+}> {
+  const raw =
+    (Array.isArray(step?.selectorCandidates)
+      ? step.selectorCandidates
+      : null) ||
+    (Array.isArray(step?.contextMeta?.selectorCandidates)
+      ? step.contextMeta.selectorCandidates
+      : null) ||
+    (Array.isArray(step?.context?.selectorCandidates)
+      ? step.context.selectorCandidates
+      : null) ||
+    [];
+
+  const mapped = raw
+    .map((c: any) => {
+      const mappedKind = mapRecorderKindToLocatorType(c?.kind);
+      if (!mappedKind) return null;
+      const rawValue = String(c?.value || "").trim();
+      if (!rawValue) return null;
+
+      const locator =
+        mappedKind.locatorType === "xpath"
+          ? sanitizePythonXPath(rawValue) || ""
+          : rawValue;
+
+      if (!locator) return null;
+
+      return {
+        locatorType: mappedKind.locatorType,
+        locator,
+        confidence: Number(c?.confidence ?? 0),
+        kind: mappedKind.normalizedKind,
+      };
+    })
+    .filter(Boolean) as Array<{
+    locatorType: "xpath" | "css";
+    locator: string;
+    confidence: number;
+    kind: LocatorPref;
+  }>;
+
+  const dedup = Array.from(
+    new Map(mapped.map((m) => [`${m.locatorType}:${m.locator}`, m])).values(),
+  );
+
+  return dedup
+    .filter((c) => !isDiscardableCandidate(c.locatorType, c.locator))
+    .sort((a, b) => {
+      const aRank = a.kind === pref ? 0 : 1;
+      const bRank = b.kind === pref ? 0 : 1;
+      if (aRank !== bRank) return aRank - bRank;
+      if (b.confidence !== a.confidence) return b.confidence - a.confidence;
+      return 0;
+    });
+}
+
 function getLocatorCandidates(
   step: Step,
+  pref: LocatorPref = "relativeXPath",
 ): Array<{ locatorType: "xpath" | "css"; locator: string }> {
+  const recorder = getRecorderLocatorCandidates(step, pref);
+  if (recorder.length) {
+    return recorder.map((r) => ({
+      locatorType: r.locatorType,
+      locator: r.locator,
+    }));
+  }
+
   const s = normalizeSelector(step);
   const raw: Array<{ locatorType: "xpath" | "css"; locator: string }> = [];
 
@@ -428,20 +529,25 @@ function getLocatorCandidates(
     (c) => !isDiscardableCandidate(c.locatorType, c.locator),
   );
 
-  // Important fallback: never return empty if raw candidates exist.
   const pool = filtered.length > 0 ? filtered : dedupRaw;
 
-  return pool.sort(
-    (a, b) =>
+  return pool.sort((a, b) => {
+    const rankDiff =
+      prefRank(a.locatorType, pref) - prefRank(b.locatorType, pref);
+    if (rankDiff !== 0) return rankDiff;
+
+    return (
       locatorQuality(b.locatorType, b.locator) -
-      locatorQuality(a.locatorType, a.locator),
-  );
+      locatorQuality(a.locatorType, a.locator)
+    );
+  });
 }
 
 function getLocatorForModel(
   step: Step,
+  pref: LocatorPref = "relativeXPath",
 ): { locatorType: "xpath" | "css"; locator: string } | null {
-  const candidates = getLocatorCandidates(step);
+  const candidates = getLocatorCandidates(step, pref);
   return candidates.length ? candidates[0] : null;
 }
 
@@ -1552,8 +1658,11 @@ function compressConsecutiveInputSteps(steps: Step[]): Step[] {
   return out;
 }
 
-function toActionModel(step: Step): ActionModel | null {
-  const loc = getLocatorForModel(step);
+function toActionModel(
+  step: Step,
+  pref: LocatorPref = "relativeXPath",
+): ActionModel | null {
+  const loc = getLocatorForModel(step, pref);
   if (!loc) return null;
 
   const action = (step.action || step.type || "").toLowerCase();
@@ -1785,7 +1894,7 @@ function buildNextStepVisibilityCandidates(
 function generateFullPythonScriptWithVariables(
   rawSteps: Step[],
   variables: Variable[],
-  _pref: LocatorPref = "relativeXPath",
+  pref: LocatorPref = "relativeXPath",
 ): string {
   if (!rawSteps.length) return "";
 
@@ -1799,7 +1908,9 @@ function generateFullPythonScriptWithVariables(
     "from selenium import webdriver",
     "from selenium.webdriver.common.by import By",
     "from selenium.webdriver.common.action_chains import ActionChains",
-    "from selenium.webdriver.support.ui import Select",
+    "from selenium.webdriver.support.ui import WebDriverWait, Select",
+    "from selenium.webdriver.support import expected_conditions as EC",
+    "from selenium.common.exceptions import NoSuchElementException",
     "from selenium.webdriver.firefox.service import Service",
     "from selenium.webdriver.firefox.options import Options as FirefoxOptions",
     "from webdriver_manager.firefox import GeckoDriverManager",
@@ -1814,6 +1925,29 @@ function generateFullPythonScriptWithVariables(
     "    self.driver = webdriver.Firefox(service=service, options=options)",
     "    self.vars = {}",
     "",
+    "  def _pick_unique(self, by, locator, timeout=10):",
+    "    WebDriverWait(self.driver, timeout).until(EC.presence_of_element_located((by, locator)))",
+    "    els = self.driver.find_elements(by, locator)",
+    "    visible = [e for e in els if e.is_displayed()]",
+    "    pool = visible if visible else els",
+    "    return pool",
+    "",
+    "  def _find_best(self, candidates, timeout=10, require_unique=True):",
+    "    attempts = []",
+    "    for kind, locator in candidates:",
+    "      by = By.XPATH if kind == 'xpath' else By.CSS_SELECTOR",
+    "      try:",
+    "        pool = self._pick_unique(by, locator, timeout=timeout)",
+    "        attempts.append(f'{kind}:{locator} -> {len(pool)} match(es)')",
+    "        if len(pool) == 1:",
+    "          return pool[0]",
+    "        if not require_unique and len(pool) > 0:",
+    "          return pool[0]",
+    "      except Exception as e:",
+    "        attempts.append(f'{kind}:{locator} -> {type(e).__name__}')",
+    "        continue",
+    "    joined = '; '.join(attempts[-8:])",
+    "    raise NoSuchElementException('No stable unique element found. Attempts: ' + joined)",
     "  def teardown_method(self, method):",
     "    self.driver.quit()",
     "",
@@ -1832,6 +1966,7 @@ function generateFullPythonScriptWithVariables(
       step,
       index,
       variables,
+      pref,
       prev,
       next,
     );
@@ -1846,6 +1981,7 @@ function generatePythonStepWithVariable(
   step: Step,
   index: number,
   variables: Variable[],
+  pref: LocatorPref = "relativeXPath",
   _prevStep?: Step,
   _nextStep?: Step,
 ): string[] | null {
@@ -1862,7 +1998,7 @@ function generatePythonStepWithVariable(
       "]",
   );
 
-  const model = toActionModel(step);
+  const model = toActionModel(step, pref);
   if (!model) {
     lines.push("    # Preserved step: no actionable locator/model generated");
     return lines;
@@ -1876,32 +2012,35 @@ function generatePythonStepWithVariable(
   const varName =
     stepVarName || (namedVar && namedVar.name) || "auto_" + (index + 1);
 
-  const byExpr =
-    model.locatorType === "xpath"
-      ? 'By.XPATH, "' + escapePy(model.locator) + '"'
-      : 'By.CSS_SELECTOR, "' + escapePy(model.locator) + '"';
+  const candidates = getLocatorCandidates(step, pref).slice(0, 8);
+  if (!candidates.length) {
+    lines.push("    # Skipped step: no locator candidates");
+    return lines;
+  }
+  const pyCandidates = toPyCandidateLiteral(candidates);
 
   if (action === "click") {
-    lines.push("    el = self.driver.find_element(" + byExpr + ")");
+    lines.push("    el = self._find_best(" + pyCandidates + ")");
     lines.push("    el.click()");
     return lines;
   }
 
   if (action === "submit") {
-    lines.push("    self.driver.find_element(" + byExpr + ").submit()");
+    lines.push("    self._find_best(" + pyCandidates + ").submit()");
     return lines;
   }
 
   if (action === "input") {
     const value = step.value != null ? String(step.value) : "";
 
-    lines.push("    el = self.driver.find_element(" + byExpr + ")");
+    lines.push("    el = self._find_best(" + pyCandidates + ")");
 
     if (isNativeSelectStep(step)) {
       lines.push(
         '    Select(el).select_by_visible_text("' + escapePy(value) + '")',
       );
     } else {
+      lines.push("    el.click()");
       lines.push("    el.clear()");
       lines.push('    el.send_keys("' + escapePy(value) + '")');
     }
@@ -1916,7 +2055,7 @@ function generatePythonStepWithVariable(
       tag === "input" || tag === "textarea" || tag === "select";
     const isChoice = type === "checkbox" || type === "radio";
 
-    lines.push("    el = self.driver.find_element(" + byExpr + ")");
+    lines.push("    el = self._find_best(" + pyCandidates + ")");
 
     if (isChoice) {
       lines.push(
@@ -1938,7 +2077,7 @@ function generatePythonStepWithVariable(
   }
 
   if (action === "check") {
-    lines.push("    el = self.driver.find_element(" + byExpr + ")");
+    lines.push("    el = self._find_best(" + pyCandidates + ")");
     lines.push("    if not el.is_selected():");
     lines.push("      el.click()");
     return lines;
@@ -1946,20 +2085,20 @@ function generatePythonStepWithVariable(
 
   if (action === "select") {
     if (isNativeSelectStep(step) && step.value != null) {
-      lines.push("    el = self.driver.find_element(" + byExpr + ")");
+      lines.push("    el = self._find_best(" + pyCandidates + ")");
       lines.push(
         '    Select(el).select_by_visible_text("' +
           escapePy(String(step.value)) +
           '")',
       );
     } else {
-      lines.push("    self.driver.find_element(" + byExpr + ").click()");
+      lines.push("    self._find_best(" + pyCandidates + ").click()");
     }
     return lines;
   }
 
   if (action === "hover") {
-    lines.push("    el = self.driver.find_element(" + byExpr + ")");
+    lines.push("    el = self._find_best(" + pyCandidates + ")");
     lines.push("    ActionChains(self.driver).move_to_element(el).perform()");
     return lines;
   }

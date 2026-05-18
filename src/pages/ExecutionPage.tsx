@@ -1,10 +1,23 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   executionService,
   moduleService,
   projectService,
   testCaseService,
 } from "../api/services";
+import { useAppDispatch, useAppSelector } from "../store/hooks";
+import {
+  clearActiveExecution,
+  closeBatchModal,
+  closeSummaryModal,
+  openBatchModal,
+  openSummaryModal,
+  setActiveBatchStatus,
+  setActiveExecution,
+  setBatchRows,
+  setIsPolling,
+  setStatusData,
+} from "../store/executionSlice";
 
 type Project = { id: string; name: string };
 type Module = { id: string; name: string; projectId?: string };
@@ -29,6 +42,19 @@ type CaseProgress = {
   failCount: number;
   startedAt?: string | null;
   completedAt?: string | null;
+  latestScreenshotUrl?: string | null;
+  screenshotUrl?: string | null;
+  screenshotSource?: string | null;
+  screenshots?: Array<{ url?: string | null } | string> | null;
+};
+
+type ExecutionBatchRow = {
+  batchNumber: string;
+  submittedOn: string;
+  submittedBy: string;
+  aiSummary: string;
+  error: string;
+  status: "queued" | "running" | "completed" | "failed" | "cancelled" | string;
 };
 
 const STATUS_COLORS: Record<string, string> = {
@@ -38,9 +64,9 @@ const STATUS_COLORS: Record<string, string> = {
   running: "#fab387",
   queued: "#89dceb",
   pending: "#89dceb",
+  cancelled: "#f9e2af",
 };
 
-// helper to render the assertions in the test case cards
 function renderAssertions(assertionsJson: unknown) {
   if (!assertionsJson || typeof assertionsJson !== "object") return null;
   const a = assertionsJson as { logic?: string; rules?: any[] };
@@ -70,7 +96,7 @@ function renderAssertions(assertionsJson: unknown) {
           const right = rightText(r);
           return (
             <li key={r.id ?? idx}>
-              {right ? `${left} ${op} ${right}` : `${left} ${op}`}
+              {right ? left + " " + op + " " + right : left + " " + op}
             </li>
           );
         })}
@@ -84,7 +110,6 @@ function renderAssertions(assertionsJson: unknown) {
   );
 }
 
-//Helper function for AI summary formatting
 function formatAiSummary(text: unknown): string {
   const raw = String(text || "");
   return raw
@@ -94,6 +119,68 @@ function formatAiSummary(text: unknown): string {
     .trim();
 }
 
+function pickScreenshotUrl(raw: any): string | null {
+  const direct =
+    raw?.latestScreenshotUrl ||
+    raw?.screenshotUrl ||
+    raw?.latestScreenshot?.url ||
+    raw?.screenshot?.url ||
+    raw?.imageUrl ||
+    raw?.url;
+
+  if (typeof direct === "string" && direct.trim()) return direct.trim();
+
+  if (Array.isArray(raw?.screenshots) && raw.screenshots.length > 0) {
+    const last = raw.screenshots[raw.screenshots.length - 1];
+    if (typeof last === "string" && last.trim()) return last.trim();
+    if (last && typeof last?.url === "string" && last.url.trim())
+      return last.url.trim();
+  }
+
+  return null;
+}
+
+function resolveCaseScreenshotFromResult(
+  activeBatchStatus: any,
+  cp: { testCaseId?: string; name?: string },
+): { url: string | null; source: string } {
+  const fromCp = pickScreenshotUrl(cp);
+  if (fromCp) {
+    return { url: fromCp, source: cp?.screenshotSource || "caseProgress" };
+  }
+
+  const cases = Array.isArray(activeBatchStatus?.result?.cases)
+    ? activeBatchStatus.result.cases
+    : Array.isArray(activeBatchStatus?.cases)
+      ? activeBatchStatus.cases
+      : [];
+
+  const matched = cases.find((c: any) => {
+    const sameId =
+      cp?.testCaseId &&
+      String(c?.testCaseId || "").trim() === String(cp.testCaseId).trim();
+    const sameName =
+      cp?.name &&
+      String(c?.name || "")
+        .trim()
+        .toLowerCase() === String(cp.name).trim().toLowerCase();
+    return sameId || sameName;
+  });
+
+  if (!matched) return { url: null, source: "none" };
+
+  const rows = Array.isArray(matched?.rows) ? matched.rows : [];
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    const rowUrl = pickScreenshotUrl(rows[i]);
+    if (rowUrl) return { url: rowUrl, source: "result.rows" };
+  }
+
+  const fromCase = pickScreenshotUrl(matched);
+  if (fromCase) return { url: fromCase, source: "result.case" };
+
+  return { url: null, source: "none" };
+}
+
 const uniqueById = <T extends { id: string }>(items: T[]): T[] => {
   const map = new Map<string, T>();
   for (const item of items) map.set(item.id, item);
@@ -101,6 +188,37 @@ const uniqueById = <T extends { id: string }>(items: T[]): T[] => {
 };
 
 export default function ExecutionPage() {
+  const dispatch = useAppDispatch();
+  const {
+    activeExecutionId,
+    statusData,
+    isPolling,
+    batchRows,
+    isBatchModalOpen,
+    activeBatchId,
+    activeBatchStatus,
+    isSummaryModalOpen,
+    summaryModalTitle,
+    summaryModalText,
+  } = useAppSelector((state: any) => state.execution);
+
+  //Batch Status values
+  const activeBatchStatusText = String(
+    activeBatchStatus?.status || "",
+  ).toLowerCase();
+  const isActiveBatchFailed =
+    activeBatchStatusText === "failed" || activeBatchStatusText === "error";
+
+  const latestScreenshotUrl =
+    activeBatchStatus?.latestScreenshotUrl ||
+    activeBatchStatus?.screenshotUrl ||
+    activeBatchStatus?.latestScreenshot?.url ||
+    (Array.isArray(activeBatchStatus?.screenshots) &&
+    activeBatchStatus.screenshots.length
+      ? activeBatchStatus.screenshots[activeBatchStatus.screenshots.length - 1]
+          ?.url
+      : null);
+
   const [projects, setProjects] = useState<Project[]>([]);
   const [modulesByProject, setModulesByProject] = useState<
     Record<string, Module[]>
@@ -118,32 +236,34 @@ export default function ExecutionPage() {
   const [filesByTc, setFilesByTc] = useState<Record<string, File | null>>({});
   const [templatesGenerated, setTemplatesGenerated] = useState(false);
 
-  const [executionId, setExecutionId] = useState("");
-  const [statusData, setStatusData] = useState<any>(null);
+  const [batchModalTab, setBatchModalTab] = useState<
+    "progress" | "screenshots" | "error"
+  >("progress");
+
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const [showRawJson, setShowRawJson] = useState(false);
 
-  const [pollCount, setPollCount] = useState(0);
-  const [isPolling, setIsPolling] = useState(false);
-  const [lastPolledAt, setLastPolledAt] = useState("");
-
-  const progress = statusData?.progress || null;
-
-  const caseProgress: CaseProgress[] = Array.isArray(statusData?.caseProgress)
-    ? statusData.caseProgress
-    : [];
-
-  //helper to check data availability
   const hasDataSource = (tc: TestCase) =>
     Boolean(filesByTc[tc.id]) || Boolean(tc.hasSavedExcel);
+
+  const getNormalizedStatus = (raw: any): string => {
+    const value =
+      raw?.status || raw?.data?.status || raw?.data?.data?.status || "";
+    return String(value).toLowerCase();
+  };
+
+  const refreshBatchRows = useCallback(async () => {
+    const rows = await executionService.listExecutionJobs();
+    dispatch(setBatchRows(Array.isArray(rows) ? rows : []));
+  }, [dispatch]);
 
   useEffect(() => {
     projectService
       .getAll()
       .then(setProjects)
       .catch(() => setError("Failed to load projects"));
-  }, []);
+    refreshBatchRows().catch(() => setError("Failed to load batch executions"));
+  }, [refreshBatchRows]);
 
   useEffect(() => {
     const missingProjectIds = expandedProjectIds.filter(
@@ -173,6 +293,33 @@ export default function ExecutionPage() {
   }, [expandedProjectIds, modulesByProject]);
 
   useEffect(() => {
+    const refresh = () => {
+      refreshBatchRows().catch(() => {});
+    };
+
+    const onFocus = () => {
+      refresh();
+    };
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") refresh();
+    }, 5000);
+
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [refreshBatchRows]);
+
+  useEffect(() => {
     const missingModuleIds = expandedModuleIds.filter(
       (moduleId) => !testCasesByModule[moduleId],
     );
@@ -199,27 +346,19 @@ export default function ExecutionPage() {
       .catch(() => setError("Failed to load test cases"));
   }, [expandedModuleIds, testCasesByModule]);
 
-  const getNormalizedStatus = (raw: any): string => {
-    const value =
-      raw?.status || raw?.data?.status || raw?.data?.data?.status || "";
-    return String(value).toLowerCase();
-  };
-
   useEffect(() => {
-    if (!executionId) return;
+    if (!activeExecutionId) return;
 
     let attempts = 0;
     const maxAttempts = 120;
-    setIsPolling(true);
-    setPollCount(0);
+    dispatch(setIsPolling(true));
 
     const timer = setInterval(async () => {
       attempts += 1;
       try {
-        const raw = await executionService.getExecutionStatus(executionId);
-        setStatusData(raw);
-        setPollCount(attempts);
-        setLastPolledAt(new Date().toLocaleTimeString());
+        const raw =
+          await executionService.getExecutionStatus(activeExecutionId);
+        dispatch(setStatusData(raw));
 
         const currentStatus = String(
           raw?.status || raw?.data?.status || "",
@@ -231,16 +370,76 @@ export default function ExecutionPage() {
 
         if (isTerminal || attempts >= maxAttempts) {
           clearInterval(timer);
-          setIsPolling(false);
+          dispatch(setIsPolling(false));
+          dispatch(clearActiveExecution());
+          refreshBatchRows().catch(() => {});
         }
       } catch {
         clearInterval(timer);
-        setIsPolling(false);
+        dispatch(setIsPolling(false));
       }
     }, 3000);
 
     return () => clearInterval(timer);
-  }, [executionId]);
+  }, [activeExecutionId, dispatch, refreshBatchRows]);
+
+  useEffect(() => {
+    if (!isBatchModalOpen || !activeBatchId) return;
+
+    let alive = true;
+    let timer: any = null;
+
+    const tick = async () => {
+      try {
+        const live = await executionService.getExecutionStatus(activeBatchId);
+        if (!alive) return;
+
+        dispatch(
+          setActiveBatchStatus({
+            ...(live || {}),
+            _source: "live",
+            _capturedAt: new Date().toISOString(),
+          }),
+        );
+
+        const st = String(live?.status || "").toLowerCase();
+        const terminal =
+          st === "completed" || st === "failed" || st === "error";
+        if (!terminal) {
+          timer = setTimeout(tick, 3000);
+        } else {
+          refreshBatchRows().catch(() => {});
+        }
+      } catch {
+        if (!alive) return;
+
+        if (!activeBatchStatus) {
+          const row = (batchRows as ExecutionBatchRow[]).find(
+            (r) => r.batchNumber === activeBatchId,
+          );
+          if (row) {
+            dispatch(
+              setActiveBatchStatus({
+                status: row.status || "queued",
+                caseProgress: [],
+                _source: "redux-fallback",
+                _capturedAt: new Date().toISOString(),
+              }),
+            );
+          }
+        }
+
+        timer = setTimeout(tick, 4000);
+      }
+    };
+
+    tick();
+
+    return () => {
+      alive = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [isBatchModalOpen, activeBatchId, dispatch, refreshBatchRows]);
 
   const allTestCases = useMemo(
     () => Object.values(testCasesByModule).flat(),
@@ -408,7 +607,6 @@ export default function ExecutionPage() {
         setExpandedModuleIds((prev) =>
           prev.includes(moduleId) ? prev : [...prev, moduleId],
         );
-
         setTemplatesGenerated(false);
         return;
       } catch {
@@ -468,19 +666,18 @@ export default function ExecutionPage() {
   const downloadTemplate = async (testCaseId: string, testCaseName: string) => {
     try {
       setError("");
-      const { blob, fileName } =
-        await executionService.downloadTemplate(testCaseId);
+      const res = await executionService.downloadTemplate(testCaseId);
 
-      const url = URL.createObjectURL(blob);
+      const url = URL.createObjectURL(res.blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = fileName;
+      link.download = res.fileName;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
     } catch {
-      setError(`Failed to download template for ${testCaseName}`);
+      setError("Failed to download template for " + testCaseName);
     }
   };
 
@@ -510,14 +707,21 @@ export default function ExecutionPage() {
 
     setBusy(true);
     setError("");
+
     try {
       const started = await executionService.startExecution({
         testCaseIds: selectedCases.map((tc) => tc.id),
         filesByTestCaseId,
         runConfig: { timeoutSec: 300 },
       });
-      setExecutionId(started.executionId);
-      setStatusData(started);
+
+      dispatch(setActiveExecution(started.executionId));
+      dispatch(setStatusData(started));
+
+      await refreshBatchRows();
+
+      setBatchModalTab("progress");
+      dispatch(openBatchModal(started.executionId));
     } catch (e: any) {
       setError(e?.response?.data?.message || "Failed to start execution");
     } finally {
@@ -526,16 +730,21 @@ export default function ExecutionPage() {
   };
 
   const currentExecutionStatus = getNormalizedStatus(statusData) || "queued";
-  const statusColor = STATUS_COLORS[currentExecutionStatus] || "#89dceb";
-  const isTerminalStatus = ["completed", "failed", "error"].includes(
-    currentExecutionStatus,
-  );
 
-  const summary = statusData?.summary || statusData?.result?.summary;
-  const results: any[] =
-    statusData?.results || statusData?.result?.results || [];
+  const topStatus = String(
+    (batchRows?.[0] as ExecutionBatchRow | undefined)?.status ||
+      currentExecutionStatus ||
+      "queued",
+  ).toLowerCase();
+  const topStatusColor = STATUS_COLORS[topStatus] || "#89dceb";
 
-  const formattedSummary = formatAiSummary(summary);
+  const resolvedStepCount =
+    activeBatchStatus?.executionDetails?.stepCount ??
+    activeBatchStatus?.stepCount ??
+    activeBatchStatus?.stepsExecuted ??
+    activeBatchStatus?.result?.stepCount ??
+    activeBatchStatus?.result?.stepsExecuted ??
+    "-";
 
   return (
     <div style={styles.page}>
@@ -547,17 +756,19 @@ export default function ExecutionPage() {
             then run batch execution.
           </p>
         </div>
-        {executionId && (
+
+        {(activeExecutionId ||
+          (batchRows as ExecutionBatchRow[]).length > 0) && (
           <div
             style={{
               ...styles.statusBadge,
-              backgroundColor: statusColor + "20",
-              color: statusColor,
-              borderColor: statusColor + "50",
+              backgroundColor: topStatusColor + "20",
+              color: topStatusColor,
+              borderColor: topStatusColor + "50",
             }}
           >
             {isPolling && <span style={styles.pulseDot} />}
-            {currentExecutionStatus.toUpperCase()}
+            {topStatus.toUpperCase()}
           </div>
         )}
       </div>
@@ -577,7 +788,6 @@ export default function ExecutionPage() {
             {projects.map((project) => {
               const projectSelected = selectedProjectIds.includes(project.id);
               const modules = modulesByProject[project.id] || [];
-
               const projectExpanded = expandedProjectIds.includes(project.id);
 
               return (
@@ -596,6 +806,7 @@ export default function ExecutionPage() {
                     >
                       {projectExpanded ? "▾" : "▸"}
                     </button>
+
                     <label style={styles.treeLabel}>
                       <input
                         type="checkbox"
@@ -618,11 +829,9 @@ export default function ExecutionPage() {
                           const moduleExpanded = expandedModuleIds.includes(
                             module.id,
                           );
-
                           const moduleSelected = selectedModuleIds.includes(
                             module.id,
                           );
-
                           const moduleCases =
                             testCasesByModule[module.id] || [];
 
@@ -646,6 +855,7 @@ export default function ExecutionPage() {
                                 >
                                   {moduleExpanded ? "▾" : "▸"}
                                 </button>
+
                                 <label style={styles.treeLabel}>
                                   <input
                                     type="checkbox"
@@ -736,7 +946,7 @@ export default function ExecutionPage() {
                       : "#fab387",
                 }}
               >
-                {uploadedCount}/{selectedCases.length}
+                {uploadedCount + "/" + selectedCases.length}
               </span>
               <span style={styles.statLabel}>Uploaded</span>
             </div>
@@ -759,9 +969,10 @@ export default function ExecutionPage() {
           <div style={styles.sectionHeader}>
             <span style={styles.stepBadge}>3</span>
             <h2 style={styles.sectionTitle}>
-              Download Templates & Upload Data
+              Download Templates and Upload Data
             </h2>
           </div>
+
           <div style={styles.uploadGrid}>
             {selectedCases.map((tc) => {
               const uploaded = filesByTc[tc.id];
@@ -785,6 +996,7 @@ export default function ExecutionPage() {
                     >
                       Download .xlsx
                     </button>
+
                     <label style={styles.uploadLabel}>
                       {uploaded ? "Re-upload" : "Upload filled sheet"}
                       <input
@@ -794,15 +1006,20 @@ export default function ExecutionPage() {
                         style={{ display: "none" }}
                       />
                     </label>
+
                     <div
                       style={{ marginTop: 8, fontSize: 12, color: "#a6adc8" }}
                     >
                       {tc.hasSavedExcel ? (
                         <span>
                           Saved Excel available
-                          {tc.lastExcelName ? `: ${tc.lastExcelName}` : ""}
+                          {tc.lastExcelName ? ": " + tc.lastExcelName : ""}
                           {tc.lastExcelUploadedAt
-                            ? ` (last uploaded ${new Date(tc.lastExcelUploadedAt).toLocaleString()})`
+                            ? " (last uploaded " +
+                              new Date(
+                                tc.lastExcelUploadedAt,
+                              ).toLocaleString() +
+                              ")"
                             : ""}
                         </span>
                       ) : (
@@ -810,6 +1027,7 @@ export default function ExecutionPage() {
                       )}
                     </div>
                   </div>
+
                   {uploaded && (
                     <div style={styles.uploadedName}>✓ {uploaded.name}</div>
                   )}
@@ -820,160 +1038,112 @@ export default function ExecutionPage() {
         </div>
       )}
 
-      {/* {executionId && isPolling && (
-        <div style={styles.pollBanner}>
-          <span style={styles.pulseDot} />
-          Polling for results · {pollCount} checks
-          {progress?.currentTestCaseName ? (
-            <span>
-              {" "}
-              · Running: {progress.currentTestCaseName}
-              {progress.currentRow
-                ? ` (Row ${progress.currentRow}/${progress.totalRowsInCase || "?"})`
-                : ""}
-            </span>
-          ) : null}
-          {lastPolledAt && <span> · Last: {lastPolledAt}</span>}
+      <div style={styles.sectionCard}>
+        <div style={styles.sectionHeader}>
+          <h2 style={styles.sectionTitle}>Batch Executions</h2>
+          <span style={styles.countChip}>
+            {(batchRows as ExecutionBatchRow[]).length} batches
+          </span>
         </div>
-      )} */}
-      {executionId && caseProgress.length > 0 && (
-        <div style={styles.caseBannerStack}>
-          {caseProgress.map((cp) => {
-            const isRunning = cp.status === "running";
-            const isCompleted = cp.status === "completed";
-            const isFailed = cp.status === "failed";
 
-            const color = isRunning
-              ? "#89b4fa"
-              : isCompleted
-                ? "#a6e3a1"
-                : isFailed
-                  ? "#f38ba8"
-                  : "#89dceb";
+        {(batchRows as ExecutionBatchRow[]).length === 0 ? (
+          <div style={styles.emptyState}>No batch executions yet.</div>
+        ) : (
+          <div style={styles.tableWrap}>
+            <table style={styles.table}>
+              <thead>
+                <tr>
+                  <th style={styles.th}>Batch Number</th>
+                  <th style={styles.th}>Submitted On</th>
+                  <th style={styles.th}>Submitted By</th>
+                  <th style={styles.th}>AI Summary</th>
+                  <th style={styles.th}>Error</th>
+                  <th style={styles.th}>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(batchRows as ExecutionBatchRow[]).map((row) => {
+                  const rowStatus = String(
+                    row.status || "queued",
+                  ).toLowerCase();
+                  const color = STATUS_COLORS[rowStatus] || "#89dceb";
 
-            return (
-              <div
-                key={cp.testCaseId}
-                style={{
-                  ...styles.pollBanner,
-                  backgroundColor: color + "15",
-                  borderColor: color + "50",
-                  color,
-                }}
-              >
-                {isRunning ? <span style={styles.pulseDot} /> : null}
-                <strong>{cp.name}</strong> · {cp.status.toUpperCase()}
-                {cp.totalRows > 0
-                  ? ` · Row ${cp.currentRow}/${cp.totalRows}`
-                  : ""}
-                {isCompleted || isFailed
-                  ? ` · Pass ${cp.passCount} · Fail ${cp.failCount}`
-                  : ""}
-              </div>
-            );
-          })}
-        </div>
-      )}
+                  return (
+                    <tr key={row.batchNumber} style={styles.tr}>
+                      <td style={styles.td}>
+                        <button
+                          type="button"
+                          style={styles.linkBtn}
+                          onClick={() => {
+                            setBatchModalTab("progress");
+                            dispatch(openBatchModal(row.batchNumber));
+                            dispatch(
+                              setActiveBatchStatus({
+                                status: row.status,
+                                caseProgress: [],
+                                _source: "table",
+                                _capturedAt: new Date().toISOString(),
+                              }),
+                            );
+                          }}
+                        >
+                          {row.batchNumber}
+                        </button>
+                      </td>
 
-      {isTerminalStatus && !isPolling && executionId && (
-        <div
-          style={{
-            ...styles.pollBanner,
-            backgroundColor:
-              currentExecutionStatus === "completed"
-                ? "#a6e3a120"
-                : "#f38ba820",
-            borderColor:
-              currentExecutionStatus === "completed"
-                ? "#a6e3a150"
-                : "#f38ba850",
-            color:
-              currentExecutionStatus === "completed" ? "#a6e3a1" : "#f38ba8",
-          }}
-        >
-          Execution {currentExecutionStatus} · {pollCount} checks
-          {lastPolledAt && ` · Last: ${lastPolledAt}`}
-        </div>
-      )}
+                      <td style={styles.td}>
+                        {row.submittedOn
+                          ? new Date(row.submittedOn).toLocaleString()
+                          : "-"}
+                      </td>
 
-      {executionId && statusData && (
-        <div style={styles.sectionCard}>
-          <div style={styles.sectionHeader}>
-            <h2 style={styles.sectionTitle}>Execution Results</h2>
-            <span style={styles.idChip}>{executionId}</span>
-          </div>
+                      <td style={styles.td}>{row.submittedBy || "-"}</td>
 
-          {summary && (
-            <div style={styles.summaryCard}>
-              <div style={styles.summaryTitle}>AI Summary</div>
-              <div style={{ ...styles.summaryText, whiteSpace: "pre-wrap" }}>
-                {formattedSummary}
-              </div>
-            </div>
-          )}
-
-          {Array.isArray(statusData?.result?.cases) &&
-            statusData.result.cases.length > 0 && (
-              <div style={styles.caseResultStack}>
-                {statusData.result.cases.map((c: any) => (
-                  <div key={c.testCaseId} style={styles.caseResultCard}>
-                    <div style={styles.caseResultHeader}>
-                      <div style={styles.caseResultTitle}>{c.name}</div>
-                      <div style={styles.caseResultMeta}>
-                        PASS {c.passCount} · FAIL {c.failCount}
-                      </div>
-                    </div>
-
-                    <div style={styles.resultsTable}>
-                      {(c.rows || []).map((r: any) => {
-                        const passed =
-                          String(r.status).toUpperCase() === "PASS";
-                        return (
-                          <div
-                            key={r.rowNumber}
-                            style={{
-                              ...styles.resultRow,
-                              borderLeftColor: passed ? "#a6e3a1" : "#f38ba8",
+                      <td style={styles.td}>
+                        {row.aiSummary ? (
+                          <button
+                            type="button"
+                            style={styles.linkBtn}
+                            onClick={() => {
+                              dispatch(
+                                openSummaryModal({
+                                  title: "AI Summary - " + row.batchNumber,
+                                  text: formatAiSummary(row.aiSummary),
+                                }),
+                              );
                             }}
                           >
-                            <span
-                              style={{
-                                color: passed ? "#a6e3a1" : "#f38ba8",
-                                fontWeight: 700,
-                                minWidth: "58px",
-                              }}
-                            >
-                              {passed ? "PASS" : "FAIL"}
-                            </span>
-                            <span style={styles.resultName}>
-                              Row {r.rowNumber}
-                            </span>
-                            {!passed && r.stderr ? (
-                              <span style={styles.resultError}>
-                                {String(r.stderr).slice(0, 220)}
-                              </span>
-                            ) : null}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
+                            View Summary
+                          </button>
+                        ) : (
+                          "-"
+                        )}
+                      </td>
 
-          <button
-            type="button"
-            onClick={() => setShowRawJson((v) => !v)}
-            style={styles.toggleRaw}
-          >
-            {showRawJson ? "Hide" : "Show"} raw JSON
-          </button>
-          {showRawJson && (
-            <pre style={styles.pre}>{JSON.stringify(statusData, null, 2)}</pre>
-          )}
-        </div>
-      )}
+                      <td style={styles.tdError} title={row.error || ""}>
+                        {row.error || "-"}
+                      </td>
+
+                      <td style={styles.td}>
+                        <span
+                          style={{
+                            ...styles.statusPill,
+                            color,
+                            borderColor: color + "55",
+                            backgroundColor: color + "1A",
+                          }}
+                        >
+                          {rowStatus.toUpperCase()}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
 
       <div style={styles.actionBar}>
         <div style={styles.actionBarInner}>
@@ -981,9 +1151,12 @@ export default function ExecutionPage() {
             <span style={styles.actionHint}>
               {!templatesGenerated
                 ? "Generate templates first"
-                : `${selectedCases.length - uploadedCount} file(s) still needed`}
+                : selectedCases.length -
+                  uploadedCount +
+                  " file(s) still needed"}
             </span>
           )}
+
           <button
             type="button"
             onClick={startRun}
@@ -1005,6 +1178,290 @@ export default function ExecutionPage() {
           </button>
         </div>
       </div>
+
+      {isBatchModalOpen && (
+        <div
+          style={styles.modalOverlay}
+          onClick={() => dispatch(closeBatchModal())}
+        >
+          <div style={styles.modalCard} onClick={(e) => e.stopPropagation()}>
+            <div style={styles.modalHeader}>
+              <h3 style={styles.modalTitle}>Batch: {activeBatchId || "-"}</h3>
+
+              {activeBatchStatus?._source && (
+                <span style={styles.countChip}>
+                  {activeBatchStatus._source === "live"
+                    ? "Live status"
+                    : "Snapshot"}
+                </span>
+              )}
+
+              <button
+                type="button"
+                style={styles.modalClose}
+                onClick={() => dispatch(closeBatchModal())}
+              >
+                Close
+              </button>
+            </div>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(3, minmax(140px, 1fr))",
+                gap: 10,
+                marginBottom: 12,
+              }}
+            >
+              <div style={styles.statChip}>
+                <span style={styles.statLabel}>Start Time</span>
+                <span style={styles.statVal}>
+                  {activeBatchStatus?.executionDetails?.startedAt
+                    ? new Date(
+                        activeBatchStatus.executionDetails.startedAt,
+                      ).toLocaleString()
+                    : "-"}
+                </span>
+              </div>
+              <div style={styles.statChip}>
+                <span style={styles.statLabel}>End Time</span>
+                <span style={styles.statVal}>
+                  {activeBatchStatus?.executionDetails?.completedAt
+                    ? new Date(
+                        activeBatchStatus.executionDetails.completedAt,
+                      ).toLocaleString()
+                    : "-"}
+                </span>
+              </div>
+              <div style={styles.statChip}>
+                <span style={styles.statLabel}>Steps</span>
+                <span style={styles.statVal}>{resolvedStepCount}</span>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+              <button
+                type="button"
+                style={
+                  batchModalTab === "progress"
+                    ? styles.tabButtonActive
+                    : styles.tabButton
+                }
+                onClick={() => setBatchModalTab("progress")}
+              >
+                Progress
+              </button>
+              <button
+                type="button"
+                style={
+                  batchModalTab === "screenshots"
+                    ? styles.tabButtonActive
+                    : styles.tabButton
+                }
+                onClick={() => setBatchModalTab("screenshots")}
+              >
+                Screenshots
+              </button>
+              <button
+                type="button"
+                style={
+                  batchModalTab === "error"
+                    ? styles.tabButtonActive
+                    : styles.tabButton
+                }
+                onClick={() => setBatchModalTab("error")}
+              >
+                Error JSON
+              </button>
+            </div>
+
+            {!activeBatchStatus ? (
+              <div style={styles.emptyState}>Loading status...</div>
+            ) : batchModalTab === "screenshots" ? (
+              <div style={styles.caseResultStack}>
+                {Array.isArray(activeBatchStatus?.caseProgress) &&
+                activeBatchStatus.caseProgress.length > 0 ? (
+                  (activeBatchStatus.caseProgress as CaseProgress[]).map(
+                    (cp) => {
+                      const screenshot = resolveCaseScreenshotFromResult(
+                        activeBatchStatus,
+                        cp,
+                      );
+
+                      return (
+                        <div
+                          key={cp.testCaseId || cp.name}
+                          style={{
+                            ...styles.pollBanner,
+                            borderColor: "#89dceb66",
+                            color: "#89dceb",
+                            backgroundColor: "#89dceb1A",
+                            padding: 12,
+                            marginBottom: 10,
+                          }}
+                        >
+                          <div style={{ marginBottom: 8 }}>
+                            <strong>{cp.name}</strong>
+                            <span style={{ marginLeft: 8, fontSize: 12 }}>
+                              Screenshot Source: {screenshot.source}
+                            </span>
+                          </div>
+                          {screenshot.url ? (
+                            <img
+                              src={screenshot.url}
+                              alt={`Screenshot for ${cp.name}`}
+                              style={{
+                                width: "100%",
+                                maxHeight: "40vh",
+                                objectFit: "contain",
+                                borderRadius: 6,
+                                border: "1px solid #313244",
+                                backgroundColor: "#11111b",
+                              }}
+                            />
+                          ) : (
+                            <div style={{ fontSize: 12, color: "#a6adc8" }}>
+                              No screenshot available for this test case.
+                            </div>
+                          )}
+                        </div>
+                      );
+                    },
+                  )
+                ) : (
+                  <div style={styles.emptyState}>No test cases found.</div>
+                )}
+              </div>
+            ) : batchModalTab === "error" ? (
+              <div style={styles.caseResultStack}>
+                {Array.isArray(activeBatchStatus?.caseProgress) &&
+                activeBatchStatus.caseProgress.length > 0 ? (
+                  (activeBatchStatus.caseProgress as CaseProgress[]).map(
+                    (cp) => {
+                      const hasError =
+                        cp.latestRawError ||
+                        (activeBatchStatus?.result?.cases &&
+                          activeBatchStatus.result.cases
+                            .find((c: any) => c.testCaseId === cp.testCaseId)
+                            ?.rows?.some((r: any) => r.rawError));
+
+                      return (
+                        <div
+                          key={cp.testCaseId || cp.name}
+                          style={{
+                            ...styles.pollBanner,
+                            borderColor: hasError ? "#f38ba866" : "#89dceb66",
+                            color: hasError ? "#f38ba8" : "#89dceb",
+                            backgroundColor: hasError
+                              ? "#f38ba81A"
+                              : "#89dceb1A",
+                            padding: 12,
+                            marginBottom: 10,
+                          }}
+                        >
+                          <div style={{ marginBottom: 8 }}>
+                            <strong>{cp.name}</strong>
+                            {cp.lastFailedRow && (
+                              <span style={{ marginLeft: 8, fontSize: 12 }}>
+                                Failed at row {cp.lastFailedRow}
+                              </span>
+                            )}
+                          </div>
+                          {hasError ? (
+                            <div style={styles.summaryModalBody}>
+                              <pre
+                                style={{
+                                  margin: 0,
+                                  whiteSpace: "pre-wrap",
+                                  wordBreak: "break-word",
+                                  fontSize: 11,
+                                }}
+                              >
+                                {cp.latestRawError
+                                  ? JSON.stringify(cp.latestRawError, null, 2)
+                                  : "No error details available."}
+                              </pre>
+                            </div>
+                          ) : (
+                            <div style={{ fontSize: 12, color: "#a6adc8" }}>
+                              No errors for this test case.
+                            </div>
+                          )}
+                        </div>
+                      );
+                    },
+                  )
+                ) : (
+                  <div style={styles.emptyState}>No test cases found.</div>
+                )}
+              </div>
+            ) : (
+              <div style={styles.caseResultStack}>
+                {Array.isArray(activeBatchStatus?.caseProgress) &&
+                activeBatchStatus.caseProgress.length > 0 ? (
+                  (activeBatchStatus.caseProgress as CaseProgress[]).map(
+                    (cp) => {
+                      const s = String(cp.status || "queued").toLowerCase();
+                      const c = STATUS_COLORS[s] || "#89dceb";
+                      return (
+                        <div
+                          key={cp.testCaseId || cp.name}
+                          style={{
+                            ...styles.pollBanner,
+                            borderColor: c + "66",
+                            color: c,
+                            backgroundColor: c + "1A",
+                          }}
+                        >
+                          <strong>{cp.name}</strong>
+                          <span>{s.toUpperCase()}</span>
+                          <span>
+                            · Row {cp.currentRow || 0}/{cp.totalRows || 0}
+                          </span>
+                          <span>
+                            · Pass {cp.passCount || 0} · Fail{" "}
+                            {cp.failCount || 0}
+                          </span>
+                        </div>
+                      );
+                    },
+                  )
+                ) : (
+                  <div style={styles.emptyState}>
+                    No test case progress found yet.
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {isSummaryModalOpen && (
+        <div
+          style={styles.modalOverlay}
+          onClick={() => dispatch(closeSummaryModal())}
+        >
+          <div
+            style={styles.modalCardLarge}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={styles.modalHeader}>
+              <h3 style={styles.modalTitle}>{summaryModalTitle}</h3>
+              <button
+                type="button"
+                style={styles.modalClose}
+                onClick={() => dispatch(closeSummaryModal())}
+              >
+                Close
+              </button>
+            </div>
+            <div style={styles.summaryModalBody}>
+              {summaryModalText || "No summary available."}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1109,18 +1566,6 @@ const styles: Record<string, React.CSSProperties> = {
     backgroundColor: "#31324450",
     padding: "2px 10px",
     borderRadius: "12px",
-  },
-  idChip: {
-    fontSize: "11px",
-    color: "#a6adc8",
-    backgroundColor: "#31324460",
-    padding: "3px 10px",
-    borderRadius: "8px",
-    fontFamily: "monospace",
-    maxWidth: "260px",
-    overflow: "hidden",
-    textOverflow: "ellipsis",
-    whiteSpace: "nowrap",
   },
   emptyState: {
     padding: "28px",
@@ -1273,80 +1718,79 @@ const styles: Record<string, React.CSSProperties> = {
     display: "flex",
     alignItems: "center",
     gap: "8px",
-    marginBottom: "14px",
+    marginBottom: "10px",
     padding: "10px 16px",
     borderRadius: "10px",
     border: "1px solid #89b4fa50",
     backgroundColor: "#89b4fa15",
     color: "#89b4fa",
     fontSize: "13px",
-  },
-  summaryCard: {
-    padding: "16px",
-    borderRadius: "10px",
-    backgroundColor: "#cba6f710",
-    border: "1px solid #cba6f730",
-    marginBottom: "14px",
-  },
-  summaryTitle: {
-    fontSize: "11px",
-    fontWeight: 700,
-    color: "#cba6f7",
-    textTransform: "uppercase",
-    letterSpacing: "1px",
-    marginBottom: "8px",
-  },
-  summaryText: {
-    margin: 0,
-    fontSize: "14px",
-    color: "#cdd6f4",
-    lineHeight: 1.7,
-  },
-  resultsTable: {
-    display: "flex",
-    flexDirection: "column",
-    gap: "6px",
-    marginBottom: "14px",
-  },
-  resultRow: {
-    display: "flex",
-    alignItems: "center",
-    gap: "12px",
-    padding: "10px 14px",
-    borderRadius: "8px",
-    backgroundColor: "#11111b",
-    borderLeft: "3px solid",
-    fontSize: "14px",
     flexWrap: "wrap",
   },
-  resultName: {
-    flex: 1,
-    color: "#cdd6f4",
-  },
-  resultError: {
-    fontSize: "12px",
-    color: "#f38ba8",
-    fontFamily: "monospace",
-  },
-  toggleRaw: {
-    padding: "5px 12px",
-    backgroundColor: "transparent",
-    color: "#585b70",
+  tableWrap: {
+    overflowX: "auto",
     border: "1px solid #313244",
-    borderRadius: "6px",
-    cursor: "pointer",
-    fontSize: "12px",
-    marginBottom: "10px",
-  },
-  pre: {
-    margin: 0,
-    padding: "14px",
+    borderRadius: "10px",
     backgroundColor: "#11111b",
+  },
+  table: {
+    width: "100%",
+    borderCollapse: "collapse",
+    minWidth: 980,
+  },
+  th: {
+    textAlign: "left",
+    fontSize: 12,
+    color: "#a6adc8",
+    borderBottom: "1px solid #313244",
+    padding: "12px 10px",
+    fontWeight: 700,
+    letterSpacing: "0.4px",
+    textTransform: "uppercase",
+  },
+  tr: {
+    borderBottom: "1px solid #1e1e2e",
+  },
+  td: {
+    padding: "10px",
+    fontSize: 13,
     color: "#cdd6f4",
-    borderRadius: "8px",
-    overflow: "auto",
-    fontSize: "11px",
-    lineHeight: 1.6,
+    verticalAlign: "top",
+  },
+  tdError: {
+    padding: "10px",
+    fontSize: 12,
+    color: "#f38ba8",
+    maxWidth: 280,
+    whiteSpace: "nowrap",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    verticalAlign: "top",
+  },
+  linkBtn: {
+    background: "transparent",
+    border: "none",
+    color: "#89dceb",
+    cursor: "pointer",
+    textDecoration: "underline",
+    padding: 0,
+    fontSize: 13,
+    fontWeight: 600,
+  },
+  statusPill: {
+    display: "inline-flex",
+    alignItems: "center",
+    border: "1px solid",
+    borderRadius: 999,
+    padding: "3px 10px",
+    fontSize: 11,
+    fontWeight: 700,
+    letterSpacing: "0.4px",
+  },
+  caseResultStack: {
+    display: "flex",
+    flexDirection: "column",
+    gap: 12,
   },
   actionBar: {
     position: "fixed",
@@ -1394,36 +1838,84 @@ const styles: Record<string, React.CSSProperties> = {
     padding: 0,
     flexShrink: 0,
   },
-  caseBannerStack: {
+  modalOverlay: {
+    position: "fixed",
+    inset: 0,
+    backgroundColor: "rgba(0,0,0,0.6)",
     display: "flex",
-    flexDirection: "column",
-    gap: 10,
-    marginBottom: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 5000,
+    padding: 20,
   },
-  caseResultStack: {
-    display: "flex",
-    flexDirection: "column",
-    gap: 12,
-  },
-  caseResultCard: {
+  modalCard: {
+    width: "min(900px, 95vw)",
+    maxHeight: "85vh",
+    overflowY: "auto",
+    backgroundColor: "#1e1e2e",
     border: "1px solid #313244",
-    borderRadius: 10,
-    backgroundColor: "#11111b",
-    padding: 12,
+    borderRadius: 12,
+    padding: 16,
   },
-  caseResultHeader: {
+  modalCardLarge: {
+    width: "min(980px, 96vw)",
+    maxHeight: "88vh",
+    overflowY: "auto",
+    backgroundColor: "#1e1e2e",
+    border: "1px solid #313244",
+    borderRadius: 12,
+    padding: 16,
+  },
+  modalHeader: {
     display: "flex",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 8,
+    gap: 12,
+    marginBottom: 12,
   },
-  caseResultTitle: {
-    fontSize: 14,
-    fontWeight: 700,
+  modalTitle: {
+    margin: 0,
+    fontSize: 18,
+    color: "#f5c2e7",
+  },
+  modalClose: {
+    border: "1px solid #313244",
+    background: "#11111b",
     color: "#cdd6f4",
+    borderRadius: 8,
+    padding: "6px 10px",
+    cursor: "pointer",
   },
-  caseResultMeta: {
-    fontSize: 12,
-    color: "#a6adc8",
+  summaryModalBody: {
+    whiteSpace: "pre-wrap",
+    fontSize: 14,
+    lineHeight: 1.65,
+    color: "#cdd6f4",
+    backgroundColor: "#11111b",
+    border: "1px solid #313244",
+    borderRadius: 10,
+    padding: 14,
+  },
+  tabButton: {
+    padding: "8px 14px",
+    backgroundColor: "transparent",
+    color: "#89dceb",
+    border: "1px solid #89dceb50",
+    borderRadius: "6px",
+    fontWeight: 600,
+    cursor: "pointer",
+    fontSize: "13px",
+    marginLeft: 0,
+  },
+  tabButtonActive: {
+    padding: "8px 14px",
+    backgroundColor: "#cba6f720",
+    color: "#cba6f7",
+    border: "1px solid #cba6f740",
+    borderRadius: "6px",
+    fontWeight: 600,
+    cursor: "pointer",
+    fontSize: "13px",
+    marginLeft: 0,
   },
 };

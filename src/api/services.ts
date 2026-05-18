@@ -331,6 +331,12 @@ export const executionService = {
       }
     }
 
-    return payload?.data ?? payload;
+    return payload;
+  },
+
+  listExecutionJobs: async () => {
+    const res = await api.get("/executions/jobs");
+    const payload = res.data?.data || {};
+    return Array.isArray(payload.batches) ? payload.batches : [];
   },
 };
