@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import FormInput from "../components/FormInput";
+import { isAxiosError } from "axios";
 
 const LoginPage = () => {
   const { login, token, user, isAdmin, loading: authLoading } = useAuth();
@@ -11,6 +12,29 @@ const LoginPage = () => {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+
+  const getLoginErrorMessage = (err: unknown): string => {
+    if (isAxiosError(err)) {
+      const status = err.response?.status;
+      const apiMessage = String(
+        err.response?.data?.message || "",
+      ).toLowerCase();
+
+      if (status === 400 || apiMessage.includes("required")) {
+        return "Username or password is missing.";
+      }
+
+      if (status === 401 || apiMessage.includes("invalid credentials")) {
+        return "Wrong username or password.";
+      }
+
+      if (status === 403 || apiMessage.includes("deactivated")) {
+        return "Your account is deactivated. Contact your administrator.";
+      }
+    }
+
+    return "Login failed. Please try again.";
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -31,9 +55,7 @@ const LoginPage = () => {
       console.log("[LoginPage] navigate('/') called");
     } catch (err: unknown) {
       console.error("[LoginPage] login failed", err);
-      const msg =
-        err instanceof Error ? err.message : "Login failed. Try again.";
-      setError(msg);
+      setError(getLoginErrorMessage(err));
     } finally {
       setLoading(false);
     }

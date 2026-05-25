@@ -35,26 +35,55 @@ type TestCase = {
 type CaseProgress = {
   testCaseId: string;
   name: string;
+  moduleName?: string;
+  projectName?: string;
   status: "queued" | "running" | "completed" | "failed";
   currentRow: number;
   totalRows: number;
   passCount: number;
   failCount: number;
+  stepCount?: number;
+  stepsExecuted?: number;
   startedAt?: string | null;
   completedAt?: string | null;
   latestScreenshotUrl?: string | null;
   screenshotUrl?: string | null;
   screenshotSource?: string | null;
+  latestRawError?: unknown;
   screenshots?: Array<{ url?: string | null } | string> | null;
 };
 
+type BatchDetailRow = {
+  key: string;
+  testCaseId: string;
+  testCaseName: string;
+  moduleName: string;
+  projectName: string;
+  status: string;
+  progressText: string;
+  screenshotUrl: string | null;
+  errorJson: unknown | null;
+};
+
 type ExecutionBatchRow = {
+  executionId: string;
   batchNumber: string;
+  version: number;
   submittedOn: string;
   submittedBy: string;
   aiSummary: string;
   error: string;
   status: "queued" | "running" | "completed" | "failed" | "cancelled" | string;
+  displayStatus?:
+    | "Running"
+    | "Completed"
+    | "Batch Executed"
+    | "Queued"
+    | string;
+  projectNames?: string[];
+  moduleNames?: string[];
+  selectedTestCaseCount?: number;
+  totalTestCaseCount?: number;
 };
 
 const STATUS_COLORS: Record<string, string> = {
@@ -181,6 +210,64 @@ function resolveCaseScreenshotFromResult(
   return { url: null, source: "none" };
 }
 
+function findCaseErrorFromResult(
+  activeBatchStatus: any,
+  cp: any,
+): unknown | null {
+  if (cp?.latestRawError) return cp.latestRawError;
+
+  const cases = Array.isArray(activeBatchStatus?.result?.cases)
+    ? activeBatchStatus.result.cases
+    : [];
+
+  const matched = cases.find((c: any) => {
+    const sameId =
+      cp?.testCaseId &&
+      String(c?.testCaseId || "").trim() === String(cp.testCaseId).trim();
+    const sameName =
+      cp?.name &&
+      String(c?.name || "")
+        .trim()
+        .toLowerCase() === String(cp.name).trim().toLowerCase();
+
+    return sameId || sameName;
+  });
+
+  if (!matched) return null;
+
+  if (matched?.latestRawError) return matched.latestRawError;
+
+  const rows = Array.isArray(matched?.rows) ? matched.rows : [];
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    if (rows[i]?.rawError) return rows[i].rawError;
+  }
+
+  return null;
+}
+
+function buildBatchDetailRows(activeBatchStatus: any): BatchDetailRow[] {
+  const caseProgress = Array.isArray(activeBatchStatus?.caseProgress)
+    ? activeBatchStatus.caseProgress
+    : [];
+
+  return caseProgress.map((cp: any) => {
+    const screenshot = resolveCaseScreenshotFromResult(activeBatchStatus, cp);
+    const errorJson = findCaseErrorFromResult(activeBatchStatus, cp);
+
+    return {
+      key: cp.testCaseId || cp.name,
+      testCaseId: cp.testCaseId,
+      testCaseName: cp.name || "-",
+      moduleName: cp.moduleName || "-",
+      projectName: cp.projectName || "-",
+      status: String(cp.status || "queued"),
+      progressText: `${Number(cp.currentRow || 0)}/${Number(cp.totalRows || 0)} rows`,
+      screenshotUrl: screenshot.url,
+      errorJson,
+    };
+  });
+}
+
 const uniqueById = <T extends { id: string }>(items: T[]): T[] => {
   const map = new Map<string, T>();
   for (const item of items) map.set(item.id, item);
@@ -201,6 +288,9 @@ export default function ExecutionPage() {
     summaryModalTitle,
     summaryModalText,
   } = useAppSelector((state: any) => state.execution);
+
+  // table row values
+  const detailRows = buildBatchDetailRows(activeBatchStatus);
 
   //Batch Status values
   const activeBatchStatusText = String(
@@ -242,6 +332,124 @@ export default function ExecutionPage() {
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+
+  //For previews
+  const [detailPreview, setDetailPreview] = useState<{
+    type: "screenshot" | "error";
+    title: string;
+    screenshotUrl?: string | null;
+    errorJson?: unknown;
+  } | null>(null);
+
+  //State for rerun
+  const [isRerunModalOpen, setIsRerunModalOpen] = useState(false);
+  const [rerunSourceExecutionId, setRerunSourceExecutionId] =
+    useState<string>("");
+  const [rerunBatchLabel, setRerunBatchLabel] = useState<string>("");
+  const [rerunVersionLabel, setRerunVersionLabel] = useState<number>(1);
+  const [rerunOptions, setRerunOptions] = useState<any[]>([]);
+  const [rerunSelectedIds, setRerunSelectedIds] = useState<string[]>([]);
+  const [rerunFilesByTc, setRerunFilesByTc] = useState<
+    Record<string, File | null>
+  >({});
+  const [rerunBusy, setRerunBusy] = useState(false);
+
+  //Functions for Rerun
+  const openRerunModal = async (row: ExecutionBatchRow) => {
+    try {
+      setError("");
+      const data = await executionService.getRerunOptions(row.executionId);
+      const options = Array.isArray(data?.testCases) ? data.testCases : [];
+      setRerunSourceExecutionId(row.executionId);
+      setRerunBatchLabel(
+        String(data?.batchNumber || row.batchNumber || row.executionId),
+      );
+      setRerunVersionLabel(Number(data?.sourceVersion || row.version || 1));
+      setRerunOptions(options);
+      setRerunSelectedIds(options.map((o: any) => o.testCaseId));
+      setRerunFilesByTc({});
+      setIsRerunModalOpen(true);
+    } catch {
+      setError("Failed to load rerun options");
+    }
+  };
+
+  //To get the status of the batch
+  const getBatchPopupStatus = (
+    activeBatchStatus: any,
+  ): "Running" | "Completed" | "Batch Executed" | "Queued" => {
+    const cps = Array.isArray(activeBatchStatus?.caseProgress)
+      ? activeBatchStatus.caseProgress
+      : [];
+
+    const jobStatus = String(activeBatchStatus?.status || "").toLowerCase();
+    const hasRunning = cps.some(
+      (c: any) => String(c?.status || "").toLowerCase() === "running",
+    );
+    const allTerminal =
+      cps.length > 0 &&
+      cps.every((c: any) =>
+        ["completed", "failed", "cancelled"].includes(
+          String(c?.status || "").toLowerCase(),
+        ),
+      );
+
+    const hasCompletedAt = Boolean(
+      activeBatchStatus?.executionDetails?.completedAt,
+    );
+
+    if (
+      (jobStatus === "completed" ||
+        jobStatus === "failed" ||
+        jobStatus === "cancelled") &&
+      hasCompletedAt
+    ) {
+      return "Batch Executed";
+    }
+    if (hasRunning || jobStatus === "running") return "Running";
+    if (allTerminal) return "Completed";
+    return "Queued";
+  };
+
+  //Batch status
+  const popupLiveStatus = getBatchPopupStatus(activeBatchStatus);
+
+  const startRerun = async () => {
+    if (!rerunSourceExecutionId) return;
+    if (!rerunSelectedIds.length) {
+      setError("Select at least one testcase for rerun");
+      return;
+    }
+
+    setRerunBusy(true);
+    setError("");
+    try {
+      const filesByTestCaseId = rerunSelectedIds.reduce<Record<string, File>>(
+        (acc, id) => {
+          const f = rerunFilesByTc[id];
+          if (f) acc[id] = f;
+          return acc;
+        },
+        {},
+      );
+
+      const started = await executionService.startRerunExecution({
+        sourceExecutionId: rerunSourceExecutionId,
+        selectedTestCaseIds: rerunSelectedIds,
+        filesByTestCaseId,
+        runConfig: { timeoutSec: 300 },
+      });
+
+      setIsRerunModalOpen(false);
+      await refreshBatchRows();
+      setBatchModalTab("progress");
+      dispatch(openBatchModal(started.executionId));
+    } catch (e: any) {
+      setError(e?.response?.data?.message || "Failed to start rerun");
+    } finally {
+      setRerunBusy(false);
+    }
+  };
 
   const hasDataSource = (tc: TestCase) =>
     Boolean(filesByTc[tc.id]) || Boolean(tc.hasSavedExcel);
@@ -1054,11 +1262,13 @@ export default function ExecutionPage() {
               <thead>
                 <tr>
                   <th style={styles.th}>Batch Number</th>
+                  <th style={styles.th}>Version</th>
                   <th style={styles.th}>Submitted On</th>
                   <th style={styles.th}>Submitted By</th>
                   <th style={styles.th}>AI Summary</th>
                   <th style={styles.th}>Error</th>
                   <th style={styles.th}>Status</th>
+                  <th style={styles.th}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -1069,14 +1279,14 @@ export default function ExecutionPage() {
                   const color = STATUS_COLORS[rowStatus] || "#89dceb";
 
                   return (
-                    <tr key={row.batchNumber} style={styles.tr}>
+                    <tr key={row.executionId} style={styles.tr}>
                       <td style={styles.td}>
                         <button
                           type="button"
                           style={styles.linkBtn}
                           onClick={() => {
                             setBatchModalTab("progress");
-                            dispatch(openBatchModal(row.batchNumber));
+                            dispatch(openBatchModal(row.executionId));
                             dispatch(
                               setActiveBatchStatus({
                                 status: row.status,
@@ -1090,6 +1300,8 @@ export default function ExecutionPage() {
                           {row.batchNumber}
                         </button>
                       </td>
+
+                      <td style={styles.td}>V{row.version || "1"}</td>
 
                       <td style={styles.td}>
                         {row.submittedOn
@@ -1133,8 +1345,20 @@ export default function ExecutionPage() {
                             backgroundColor: color + "1A",
                           }}
                         >
-                          {rowStatus.toUpperCase()}
+                          {String(
+                            row.displayStatus || row.status || "queued",
+                          ).toUpperCase()}
                         </span>
+                      </td>
+
+                      <td style={styles.td}>
+                        <button
+                          type="button"
+                          style={styles.linkBtn}
+                          onClick={() => openRerunModal(row)}
+                        >
+                          Rerun
+                        </button>
                       </td>
                     </tr>
                   );
@@ -1188,13 +1412,14 @@ export default function ExecutionPage() {
             <div style={styles.modalHeader}>
               <h3 style={styles.modalTitle}>Batch: {activeBatchId || "-"}</h3>
 
-              {activeBatchStatus?._source && (
+              {/* {activeBatchStatus?._source && (
                 <span style={styles.countChip}>
                   {activeBatchStatus._source === "live"
                     ? "Live status"
                     : "Snapshot"}
                 </span>
-              )}
+              )} */}
+              <span style={styles.countChip}>{popupLiveStatus}</span>
 
               <button
                 type="button"
@@ -1204,7 +1429,6 @@ export default function ExecutionPage() {
                 Close
               </button>
             </div>
-
             <div
               style={{
                 display: "grid",
@@ -1233,206 +1457,90 @@ export default function ExecutionPage() {
                     : "-"}
                 </span>
               </div>
-              <div style={styles.statChip}>
-                <span style={styles.statLabel}>Steps</span>
-                <span style={styles.statVal}>{resolvedStepCount}</span>
-              </div>
             </div>
 
-            <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-              <button
-                type="button"
-                style={
-                  batchModalTab === "progress"
-                    ? styles.tabButtonActive
-                    : styles.tabButton
-                }
-                onClick={() => setBatchModalTab("progress")}
-              >
-                Progress
-              </button>
-              <button
-                type="button"
-                style={
-                  batchModalTab === "screenshots"
-                    ? styles.tabButtonActive
-                    : styles.tabButton
-                }
-                onClick={() => setBatchModalTab("screenshots")}
-              >
-                Screenshots
-              </button>
-              <button
-                type="button"
-                style={
-                  batchModalTab === "error"
-                    ? styles.tabButtonActive
-                    : styles.tabButton
-                }
-                onClick={() => setBatchModalTab("error")}
-              >
-                Error JSON
-              </button>
+            <div style={styles.tableWrap}>
+              <table style={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={styles.th}>Testcase Name</th>
+                    <th style={styles.th}>Module Name</th>
+                    <th style={styles.th}>Project Name</th>
+                    <th style={styles.th}>Steps</th>
+                    <th style={styles.th}>Progress</th>
+                    <th style={styles.th}>Status</th>
+                    <th style={styles.th}>Screenshot</th>
+                    <th style={styles.th}>Error JSON</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {detailRows.map((row) => {
+                    const statusKey = row.status.toLowerCase();
+                    const statusColor = STATUS_COLORS[statusKey] || "#89dceb";
+
+                    return (
+                      <tr key={row.key} style={styles.tr}>
+                        <td style={styles.td}>{row.testCaseName}</td>
+                        <td style={styles.td}>{row.moduleName}</td>
+                        <td style={styles.td}>{row.projectName}</td>
+                        <td style={styles.td}>{Number(row.stepCount || 0)}</td>
+                        <td style={styles.td}>{row.progressText}</td>
+                        <td style={styles.td}>
+                          <span
+                            style={{
+                              ...styles.statusPill,
+                              color: statusColor,
+                              borderColor: statusColor + "66",
+                              backgroundColor: statusColor + "1A",
+                            }}
+                          >
+                            {row.status.toUpperCase()}
+                          </span>
+                        </td>
+                        <td style={styles.td}>
+                          {row.screenshotUrl ? (
+                            <button
+                              type="button"
+                              style={styles.linkBtn}
+                              onClick={() =>
+                                setDetailPreview({
+                                  type: "screenshot",
+                                  title: row.testCaseName,
+                                  screenshotUrl: row.screenshotUrl,
+                                })
+                              }
+                            >
+                              View Screenshot
+                            </button>
+                          ) : (
+                            <span style={styles.treeHint}>Not available</span>
+                          )}
+                        </td>
+                        <td style={styles.td}>
+                          {row.errorJson ? (
+                            <button
+                              type="button"
+                              style={styles.linkBtn}
+                              onClick={() =>
+                                setDetailPreview({
+                                  type: "error",
+                                  title: row.testCaseName,
+                                  errorJson: row.errorJson,
+                                })
+                              }
+                            >
+                              View Error JSON
+                            </button>
+                          ) : (
+                            <span style={styles.treeHint}>No error</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
-
-            {!activeBatchStatus ? (
-              <div style={styles.emptyState}>Loading status...</div>
-            ) : batchModalTab === "screenshots" ? (
-              <div style={styles.caseResultStack}>
-                {Array.isArray(activeBatchStatus?.caseProgress) &&
-                activeBatchStatus.caseProgress.length > 0 ? (
-                  (activeBatchStatus.caseProgress as CaseProgress[]).map(
-                    (cp) => {
-                      const screenshot = resolveCaseScreenshotFromResult(
-                        activeBatchStatus,
-                        cp,
-                      );
-
-                      return (
-                        <div
-                          key={cp.testCaseId || cp.name}
-                          style={{
-                            ...styles.pollBanner,
-                            borderColor: "#89dceb66",
-                            color: "#89dceb",
-                            backgroundColor: "#89dceb1A",
-                            padding: 12,
-                            marginBottom: 10,
-                          }}
-                        >
-                          <div style={{ marginBottom: 8 }}>
-                            <strong>{cp.name}</strong>
-                            <span style={{ marginLeft: 8, fontSize: 12 }}>
-                              Screenshot Source: {screenshot.source}
-                            </span>
-                          </div>
-                          {screenshot.url ? (
-                            <img
-                              src={screenshot.url}
-                              alt={`Screenshot for ${cp.name}`}
-                              style={{
-                                width: "100%",
-                                maxHeight: "40vh",
-                                objectFit: "contain",
-                                borderRadius: 6,
-                                border: "1px solid #313244",
-                                backgroundColor: "#11111b",
-                              }}
-                            />
-                          ) : (
-                            <div style={{ fontSize: 12, color: "#a6adc8" }}>
-                              No screenshot available for this test case.
-                            </div>
-                          )}
-                        </div>
-                      );
-                    },
-                  )
-                ) : (
-                  <div style={styles.emptyState}>No test cases found.</div>
-                )}
-              </div>
-            ) : batchModalTab === "error" ? (
-              <div style={styles.caseResultStack}>
-                {Array.isArray(activeBatchStatus?.caseProgress) &&
-                activeBatchStatus.caseProgress.length > 0 ? (
-                  (activeBatchStatus.caseProgress as CaseProgress[]).map(
-                    (cp) => {
-                      const hasError =
-                        cp.latestRawError ||
-                        (activeBatchStatus?.result?.cases &&
-                          activeBatchStatus.result.cases
-                            .find((c: any) => c.testCaseId === cp.testCaseId)
-                            ?.rows?.some((r: any) => r.rawError));
-
-                      return (
-                        <div
-                          key={cp.testCaseId || cp.name}
-                          style={{
-                            ...styles.pollBanner,
-                            borderColor: hasError ? "#f38ba866" : "#89dceb66",
-                            color: hasError ? "#f38ba8" : "#89dceb",
-                            backgroundColor: hasError
-                              ? "#f38ba81A"
-                              : "#89dceb1A",
-                            padding: 12,
-                            marginBottom: 10,
-                          }}
-                        >
-                          <div style={{ marginBottom: 8 }}>
-                            <strong>{cp.name}</strong>
-                            {cp.lastFailedRow && (
-                              <span style={{ marginLeft: 8, fontSize: 12 }}>
-                                Failed at row {cp.lastFailedRow}
-                              </span>
-                            )}
-                          </div>
-                          {hasError ? (
-                            <div style={styles.summaryModalBody}>
-                              <pre
-                                style={{
-                                  margin: 0,
-                                  whiteSpace: "pre-wrap",
-                                  wordBreak: "break-word",
-                                  fontSize: 11,
-                                }}
-                              >
-                                {cp.latestRawError
-                                  ? JSON.stringify(cp.latestRawError, null, 2)
-                                  : "No error details available."}
-                              </pre>
-                            </div>
-                          ) : (
-                            <div style={{ fontSize: 12, color: "#a6adc8" }}>
-                              No errors for this test case.
-                            </div>
-                          )}
-                        </div>
-                      );
-                    },
-                  )
-                ) : (
-                  <div style={styles.emptyState}>No test cases found.</div>
-                )}
-              </div>
-            ) : (
-              <div style={styles.caseResultStack}>
-                {Array.isArray(activeBatchStatus?.caseProgress) &&
-                activeBatchStatus.caseProgress.length > 0 ? (
-                  (activeBatchStatus.caseProgress as CaseProgress[]).map(
-                    (cp) => {
-                      const s = String(cp.status || "queued").toLowerCase();
-                      const c = STATUS_COLORS[s] || "#89dceb";
-                      return (
-                        <div
-                          key={cp.testCaseId || cp.name}
-                          style={{
-                            ...styles.pollBanner,
-                            borderColor: c + "66",
-                            color: c,
-                            backgroundColor: c + "1A",
-                          }}
-                        >
-                          <strong>{cp.name}</strong>
-                          <span>{s.toUpperCase()}</span>
-                          <span>
-                            · Row {cp.currentRow || 0}/{cp.totalRows || 0}
-                          </span>
-                          <span>
-                            · Pass {cp.passCount || 0} · Fail{" "}
-                            {cp.failCount || 0}
-                          </span>
-                        </div>
-                      );
-                    },
-                  )
-                ) : (
-                  <div style={styles.emptyState}>
-                    No test case progress found yet.
-                  </div>
-                )}
-              </div>
-            )}
           </div>
         </div>
       )}
@@ -1459,6 +1567,168 @@ export default function ExecutionPage() {
             <div style={styles.summaryModalBody}>
               {summaryModalText || "No summary available."}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rerun Modal */}
+      {isRerunModalOpen && (
+        <div
+          style={styles.modalOverlay}
+          onClick={() => setIsRerunModalOpen(false)}
+        >
+          <div
+            style={styles.modalCardLarge}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={styles.modalHeader}>
+              <h3 style={styles.modalTitle}>
+                Rerun Batch {rerunBatchLabel} (Source V{rerunVersionLabel})
+              </h3>
+              <button
+                type="button"
+                style={styles.modalClose}
+                onClick={() => setIsRerunModalOpen(false)}
+              >
+                Close
+              </button>
+            </div>
+
+            <div style={styles.tableWrap}>
+              <table style={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={styles.th}>Select</th>
+                    <th style={styles.th}>Testcase</th>
+                    <th style={styles.th}>Project</th>
+                    <th style={styles.th}>Module</th>
+                    <th style={styles.th}>Excel</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rerunOptions.map((tc: any) => {
+                    const checked = rerunSelectedIds.includes(tc.testCaseId);
+                    return (
+                      <tr key={tc.testCaseId} style={styles.tr}>
+                        <td style={styles.td}>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            onChange={() =>
+                              setRerunSelectedIds((prev) =>
+                                checked
+                                  ? prev.filter((id) => id !== tc.testCaseId)
+                                  : [...prev, tc.testCaseId],
+                              )
+                            }
+                          />
+                        </td>
+                        <td style={styles.td}>{tc.name}</td>
+                        <td style={styles.td}>{tc.projectName || "-"}</td>
+                        <td style={styles.td}>{tc.moduleName || "-"}</td>
+                        <td style={styles.td}>
+                          <button
+                            type="button"
+                            style={styles.linkBtn}
+                            onClick={() =>
+                              downloadTemplate(tc.testCaseId, tc.name)
+                            }
+                          >
+                            Download Template
+                          </button>
+                          <label
+                            style={{ ...styles.uploadLabel, marginLeft: 8 }}
+                          >
+                            Upload
+                            <input
+                              type="file"
+                              accept=".xlsx"
+                              style={{ display: "none" }}
+                              onChange={(e) =>
+                                setRerunFilesByTc((p) => ({
+                                  ...p,
+                                  [tc.testCaseId]: e.target.files?.[0] || null,
+                                }))
+                              }
+                            />
+                          </label>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div
+              style={{
+                marginTop: 12,
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: 8,
+              }}
+            >
+              <button
+                type="button"
+                style={styles.modalClose}
+                onClick={() => setIsRerunModalOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                style={styles.primaryButton}
+                disabled={rerunBusy}
+                onClick={startRerun}
+              >
+                {rerunBusy ? "Starting..." : "Rerun Selected"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Screenshot/error modal */}
+      {detailPreview && (
+        <div
+          style={styles.nestedModalOverlay}
+          onClick={() => setDetailPreview(null)}
+        >
+          <div
+            style={styles.nestedModalCard}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={styles.modalHeader}>
+              <h3 style={styles.modalTitle}>
+                {detailPreview.type === "screenshot"
+                  ? "Screenshot"
+                  : "Error JSON"}
+                : {detailPreview.title}
+              </h3>
+              <button
+                type="button"
+                style={styles.modalClose}
+                onClick={() => setDetailPreview(null)}
+              >
+                Close
+              </button>
+            </div>
+
+            {detailPreview.type === "screenshot" ? (
+              detailPreview.screenshotUrl ? (
+                <img
+                  src={detailPreview.screenshotUrl}
+                  alt={detailPreview.title}
+                  style={styles.previewImage}
+                />
+              ) : (
+                <div style={styles.emptyState}>No screenshot available.</div>
+              )
+            ) : (
+              <pre style={styles.jsonPreview}>
+                {JSON.stringify(detailPreview.errorJson || {}, null, 2)}
+              </pre>
+            )}
           </div>
         </div>
       )}
@@ -1917,5 +2187,44 @@ const styles: Record<string, React.CSSProperties> = {
     cursor: "pointer",
     fontSize: "13px",
     marginLeft: 0,
+  },
+  nestedModalOverlay: {
+    position: "fixed",
+    inset: 0,
+    backgroundColor: "rgba(0,0,0,0.72)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    zIndex: 5100,
+    padding: 20,
+  },
+  nestedModalCard: {
+    width: "min(1000px, 94vw)",
+    maxHeight: "86vh",
+    overflowY: "auto",
+    backgroundColor: "#11111b",
+    border: "1px solid #313244",
+    borderRadius: 12,
+    padding: 16,
+  },
+  previewImage: {
+    width: "100%",
+    maxHeight: "72vh",
+    objectFit: "contain",
+    borderRadius: 8,
+    border: "1px solid #313244",
+    backgroundColor: "#0b0b12",
+  },
+  jsonPreview: {
+    margin: 0,
+    whiteSpace: "pre-wrap",
+    wordBreak: "break-word",
+    fontSize: 13,
+    lineHeight: 1.6,
+    color: "#cdd6f4",
+    backgroundColor: "#181825",
+    border: "1px solid #313244",
+    borderRadius: 10,
+    padding: 14,
   },
 };

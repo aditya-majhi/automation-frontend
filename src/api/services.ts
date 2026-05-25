@@ -318,6 +318,41 @@ export const executionService = {
     return res.data.data;
   },
 
+  getRerunOptions: async (executionId: string) => {
+    const res = await api.get(`/executions/${executionId}/rerun-options`);
+    return res.data?.data || null;
+  },
+
+  startRerunExecution: async (payload: {
+    sourceExecutionId: string;
+    selectedTestCaseIds: string[];
+    filesByTestCaseId: Record<string, File | undefined>;
+    runConfig?: { timeoutSec?: number };
+  }) => {
+    const form = new FormData();
+    form.append(
+      "selectedTestCaseIds",
+      JSON.stringify(payload.selectedTestCaseIds),
+    );
+    form.append(
+      "runConfig",
+      JSON.stringify(payload.runConfig || { timeoutSec: 300 }),
+    );
+
+    for (const testCaseId of payload.selectedTestCaseIds) {
+      const file = payload.filesByTestCaseId[testCaseId];
+      if (!file) continue;
+      form.append("files", file);
+      form.append("fileTestCaseIds", testCaseId);
+    }
+
+    const res = await api.post(
+      `/executions/${payload.sourceExecutionId}/rerun`,
+      form,
+    );
+    return res.data?.data || res.data;
+  },
+
   getExecutionStatus: async (executionId: string) => {
     const res = await api.get(`/executions/${executionId}`);
     const payload = res.data?.data;
