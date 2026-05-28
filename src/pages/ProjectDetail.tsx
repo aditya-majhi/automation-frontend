@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { moduleService, projectService } from "../api/services";
+import { useAuth } from "../context/AuthContext";
 import Card from "../components/Card";
 import Modal from "../components/Modal";
 import FormInput from "../components/FormInput";
@@ -14,6 +15,8 @@ interface Module {
 
 const ProjectDetailPage = () => {
   const { projectId } = useParams<{ projectId: string }>();
+  const { hasRole } = useAuth();
+  const canManageProjects = hasRole("DEFINE_PROJECTS");
   const navigate = useNavigate();
   const [modules, setModules] = useState<Module[]>([]);
   const [projectName, setProjectName] = useState("");
@@ -117,9 +120,11 @@ const ProjectDetailPage = () => {
         <h2 style={styles.title}>
           {(projectName || "Project") + " > Modules"}
         </h2>
-        <button style={styles.addBtn} onClick={openCreateModal}>
-          + New Module
-        </button>
+        {canManageProjects && (
+          <button style={styles.addBtn} onClick={openCreateModal}>
+            + New Module
+          </button>
+        )}
       </div>
 
       {error && <div style={styles.error}>{error}</div>}
@@ -136,14 +141,16 @@ const ProjectDetailPage = () => {
             subtitle={
               m.description || new Date(m.createdAt).toLocaleDateString()
             }
-            onEdit={() => openEditModal(m)}
-            onDelete={() => handleDeleteModule(m.id)}
+            onEdit={canManageProjects ? () => openEditModal(m) : undefined}
+            onDelete={
+              canManageProjects ? () => handleDeleteModule(m.id) : undefined
+            }
             onClick={() => navigate(`/modules/${m.id}`)}
           />
         ))
       )}
 
-      {showModal && (
+      {showModal && canManageProjects && (
         <Modal
           title={editTarget ? "Edit Module" : "New Module"}
           onClose={() => {

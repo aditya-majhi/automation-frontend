@@ -13,6 +13,7 @@ import AdminLayout from "./components/AdminLayout";
 import UsersPage from "./pages/UserManagement";
 import RolesPage from "./pages/RoleManagement";
 import ProjectMappingPage from "./pages/ProjectMapping";
+import ForgotPasswordPage from "./pages/ForgotPassword";
 
 const AdminRoute = ({ children }: { children: React.ReactNode }) => {
   const { token, isAdmin, loading } = useAuth();
@@ -20,6 +21,30 @@ const AdminRoute = ({ children }: { children: React.ReactNode }) => {
     return <div style={{ minHeight: "100vh", backgroundColor: "#181825" }} />;
   if (!token) return <Navigate to="/login" replace />;
   if (!isAdmin) return <Navigate to="/" replace />;
+  return <>{children}</>;
+};
+
+const HomeRoute = () => {
+  const { hasRole } = useAuth();
+
+  const canAccessProjects = hasRole("DEFINE_PROJECTS");
+
+  return canAccessProjects ? (
+    <Navigate to="/projects" replace />
+  ) : (
+    <Navigate to="/executions" replace />
+  );
+};
+
+const ProjectAreaRoute = ({ children }: { children: React.ReactNode }) => {
+  const { hasRole } = useAuth();
+
+  const canAccessProjects = hasRole("DEFINE_PROJECTS");
+
+  if (!canAccessProjects) {
+    return <Navigate to="/executions" replace />;
+  }
+
   return <>{children}</>;
 };
 
@@ -31,35 +56,57 @@ const App = () => {
         <Routes>
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
+          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+
           <Route
             path="/"
             element={
               <ProtectedRoute>
-                <ProjectsPage />
+                <HomeRoute />
               </ProtectedRoute>
             }
           />
+
+          <Route
+            path="/projects"
+            element={
+              <ProtectedRoute>
+                <ProjectAreaRoute>
+                  <ProjectsPage />
+                </ProjectAreaRoute>
+              </ProtectedRoute>
+            }
+          />
+
           <Route
             path="/projects/:projectId"
             element={
               <ProtectedRoute>
-                <ProjectDetailPage />
+                <ProjectAreaRoute>
+                  <ProjectDetailPage />
+                </ProjectAreaRoute>
               </ProtectedRoute>
             }
           />
+
           <Route
             path="/modules/:moduleId"
             element={
               <ProtectedRoute>
-                <ModuleDetailPage />
+                <ProjectAreaRoute>
+                  <ModuleDetailPage />
+                </ProjectAreaRoute>
               </ProtectedRoute>
             }
           />
+
           <Route
             path="/testcases/:testCaseId"
             element={
               <ProtectedRoute>
-                <TestCaseDetailPage />
+                <ProjectAreaRoute>
+                  <TestCaseDetailPage />
+                </ProjectAreaRoute>
               </ProtectedRoute>
             }
           />

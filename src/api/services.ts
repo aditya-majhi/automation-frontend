@@ -24,8 +24,15 @@ export const authService = {
     const res = await api.post("/auth/forgot-password", { email });
     return res.data.data;
   },
-  resetPassword: async (token: string, newPassword: string) => {
-    const res = await api.post("/auth/reset-password", { token, newPassword });
+  verifyResetOtp: async (email: string, otp: string) => {
+    const res = await api.post("/auth/verify-reset-otp", { email, otp });
+    return res.data.data;
+  },
+  resetPassword: async (resetSessionToken: string, newPassword: string) => {
+    const res = await api.post("/auth/reset-password", {
+      resetSessionToken,
+      newPassword,
+    });
     return res.data.data;
   },
 };
@@ -264,6 +271,12 @@ export const adminService = {
   mapUserToProject: async (projectId: string, userId: string) => {
     const res = await api.post(`/api/admin/projects/${projectId}/users`, {
       userId,
+    });
+    return res.data.data;
+  },
+  assignProjectsToUser: async (userId: string, projectIds: string[]) => {
+    const res = await api.post(`/api/admin/users/${userId}/projects/assign`, {
+      projectIds,
     });
     return res.data.data;
   },

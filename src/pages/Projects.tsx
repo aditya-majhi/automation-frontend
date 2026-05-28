@@ -16,7 +16,8 @@ interface Project {
 }
 
 const ProjectsPage = () => {
-  const { isAdmin } = useAuth();
+  const { hasRole } = useAuth();
+  const canManageProjects = hasRole("DEFINE_PROJECTS");
   const [projects, setProjects] = useState<Project[]>([]);
   const [editTarget, setEditTarget] = useState<Project | null>(null);
   const [loading, setLoading] = useState(true);
@@ -91,7 +92,7 @@ const ProjectsPage = () => {
   };
 
   const handleDelete = async (project: Project) => {
-    if (!isAdmin) return;
+    if (!canManageProjects) return;
 
     const moduleCount = project.moduleCount || 0;
     const testCaseCount = project.testCaseCount || 0;
@@ -112,7 +113,7 @@ const ProjectsPage = () => {
     }
   };
 
-  const emptyMessage = isAdmin
+  const emptyMessage = canManageProjects
     ? "No projects yet. Create one to get started."
     : "You don't have any Projects. Ask the Admin to assign projects.";
 
@@ -120,7 +121,7 @@ const ProjectsPage = () => {
     <div style={styles.page}>
       <div style={styles.header}>
         <h2 style={styles.title}>📁 Projects</h2>
-        {isAdmin && (
+        {canManageProjects && (
           <button style={styles.addBtn} onClick={openCreateModal}>
             + New Project
           </button>
@@ -144,14 +145,18 @@ const ProjectsPage = () => {
               project.description ||
               new Date(project.createdAt).toLocaleDateString()
             }
-            onEdit={isAdmin ? () => openEditModal(project) : undefined}
-            onDelete={isAdmin ? () => handleDelete(project) : undefined}
+            onEdit={
+              canManageProjects ? () => openEditModal(project) : undefined
+            }
+            onDelete={
+              canManageProjects ? () => handleDelete(project) : undefined
+            }
             onClick={() => navigate(`/projects/${project.id}`)}
           />
         ))
       )}
 
-      {showModal && isAdmin && (
+      {showModal && canManageProjects && (
         <Modal
           title={editTarget ? "Edit Project" : "New Project"}
           onClose={() => {

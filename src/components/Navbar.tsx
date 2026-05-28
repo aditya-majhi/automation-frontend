@@ -2,8 +2,10 @@ import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 
 const Navbar = () => {
-  const { user, logout, isAdmin } = useAuth();
+  const { user, logout, isAdmin, hasRole } = useAuth();
   const navigate = useNavigate();
+
+  const canAccessProjects = hasRole("DEFINE_PROJECTS");
 
   const handleLogout = () => {
     logout();
@@ -18,9 +20,11 @@ const Navbar = () => {
         </Link>
 
         <div style={styles.navLinks}>
-          <Link to="/" style={styles.navLink}>
-            Projects
-          </Link>
+          {canAccessProjects && (
+            <Link to="/projects" style={styles.navLink}>
+              Projects
+            </Link>
+          )}
           <Link to="/executions" style={styles.navLink}>
             Executions
           </Link>

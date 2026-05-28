@@ -5,34 +5,51 @@ import FormInput from "../components/FormInput";
 
 const ForgotPasswordPage = () => {
   const [email, setEmail] = useState("");
-  const [token, setToken] = useState("");
+  const [otp, setOtp] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
-  const [step, setStep] = useState<"request" | "reset" | "done">("request");
+
+  const [resetSessionToken, setResetSessionToken] = useState("");
+  const [step, setStep] = useState<"request" | "verify" | "reset" | "done">(
+    "request",
+  );
+
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  // Dev only: store the token returned from API
-  const [devToken, setDevToken] = useState("");
 
-  const handleRequestToken = async (e: React.FormEvent) => {
+  const handleRequestOtp = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
     setMessage("");
     setLoading(true);
+
     try {
       const result = await authService.forgotPassword(email);
-      setMessage(result.message);
-      // In dev mode, the API returns the token directly
-      if (result.token) {
-        setDevToken(result.token);
-        setToken(result.token);
-      }
+      setMessage(
+        result.message || "If this email exists, an OTP has been sent.",
+      );
+      setStep("verify");
+    } catch (err: any) {
+      setError(err.message || "Failed to request OTP");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVerifyOtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setMessage("");
+    setLoading(true);
+
+    try {
+      const result = await authService.verifyResetOtp(email, otp);
+      setResetSessionToken(result.resetSessionToken);
+      setMessage(result.message || "OTP verified");
       setStep("reset");
-    } catch (err: unknown) {
-      const msg =
-        err instanceof Error ? err.message : "Failed to request reset token";
-      setError(msg);
+    } catch (err: any) {
+      setError(err.message || "Invalid OTP");
     } finally {
       setLoading(false);
     }
@@ -54,13 +71,14 @@ const ForgotPasswordPage = () => {
 
     setLoading(true);
     try {
-      const result = await authService.resetPassword(token, newPassword);
-      setMessage(result.message);
+      const result = await authService.resetPassword(
+        resetSessionToken,
+        newPassword,
+      );
+      setMessage(result.message || "Password reset successfully");
       setStep("done");
-    } catch (err: unknown) {
-      const msg =
-        err instanceof Error ? err.message : "Failed to reset password";
-      setError(msg);
+    } catch (err: any) {
+      setError(err.message || "Failed to reset password");
     } finally {
       setLoading(false);
     }
@@ -69,14 +87,14 @@ const ForgotPasswordPage = () => {
   return (
     <div style={styles.page}>
       <div style={styles.card}>
-        <h2 style={styles.title}>🔑 Reset Password</h2>
+        <h2 style={styles.title}>Reset Password</h2>
 
         {step === "request" && (
           <>
-            <p style={styles.sub}>Enter your email to receive a reset token</p>
+            <p style={styles.sub}>Enter your email to receive OTP</p>
             {error && <div style={styles.error}>{error}</div>}
             {message && <div style={styles.success}>{message}</div>}
-            <form onSubmit={handleRequestToken}>
+            <form onSubmit={handleRequestOtp}>
               <FormInput
                 label="Email"
                 type="email"
@@ -85,7 +103,27 @@ const ForgotPasswordPage = () => {
                 placeholder="you@example.com"
               />
               <button style={styles.btn} type="submit" disabled={loading}>
-                {loading ? "Sending..." : "Send Reset Token"}
+                {loading ? "Sending..." : "Send OTP"}
+              </button>
+            </form>
+          </>
+        )}
+
+        {step === "verify" && (
+          <>
+            <p style={styles.sub}>Enter the OTP sent to your email</p>
+            {error && <div style={styles.error}>{error}</div>}
+            {message && <div style={styles.success}>{message}</div>}
+            <form onSubmit={handleVerifyOtp}>
+              <FormInput
+                label="OTP"
+                type="text"
+                value={otp}
+                onChange={setOtp}
+                placeholder="6-digit OTP"
+              />
+              <button style={styles.btn} type="submit" disabled={loading}>
+                {loading ? "Verifying..." : "Verify OTP"}
               </button>
             </form>
           </>
@@ -93,27 +131,10 @@ const ForgotPasswordPage = () => {
 
         {step === "reset" && (
           <>
-            <p style={styles.sub}>
-              Enter the reset token and your new password
-            </p>
+            <p style={styles.sub}>Set your new password</p>
             {error && <div style={styles.error}>{error}</div>}
             {message && <div style={styles.success}>{message}</div>}
-            {devToken && (
-              <div style={styles.devBox}>
-                <span style={{ fontSize: "11px", color: "#fab387" }}>
-                  ⚠️ DEV MODE — Token:
-                </span>
-                <code style={styles.devToken}>{devToken}</code>
-              </div>
-            )}
             <form onSubmit={handleResetPassword}>
-              <FormInput
-                label="Reset Token"
-                type="text"
-                value={token}
-                onChange={setToken}
-                placeholder="Paste your reset token"
-              />
               <FormInput
                 label="New Password"
                 type="password"
@@ -137,7 +158,7 @@ const ForgotPasswordPage = () => {
 
         {step === "done" && (
           <>
-            <div style={styles.success}>✅ {message}</div>
+            <div style={styles.success}>Success: {message}</div>
             <Link
               to="/login"
               style={{

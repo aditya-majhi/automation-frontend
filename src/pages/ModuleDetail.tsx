@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { testCaseService, moduleService } from "../api/services";
+import { useAuth } from "../context/AuthContext";
 import Card from "../components/Card";
 import Modal from "../components/Modal";
 import FormInput from "../components/FormInput";
@@ -23,6 +24,8 @@ interface ModuleMeta {
 
 const ModuleDetailPage = () => {
   const { moduleId } = useParams<{ moduleId: string }>();
+  const { hasRole } = useAuth();
+  const canManageTests = hasRole("DEFINE_PROJECTS");
   const navigate = useNavigate();
   const [moduleMeta, setModuleMeta] = useState<ModuleMeta | null>(null);
   const [testCases, setTestCases] = useState<TestCase[]>([]);
@@ -129,9 +132,11 @@ const ModuleDetailPage = () => {
             (moduleMeta?.name || "Module") +
             " > Testcases"}
         </h2>
-        <button style={styles.addBtn} onClick={openCreateModal}>
-          + New Test Case
-        </button>
+        {canManageTests && (
+          <button style={styles.addBtn} onClick={openCreateModal}>
+            + New Test Case
+          </button>
+        )}
       </div>
 
       {error && <div style={styles.error}>{error}</div>}
@@ -148,14 +153,16 @@ const ModuleDetailPage = () => {
             subtitle={
               tc.description || new Date(tc.createdAt).toLocaleDateString()
             }
-            onEdit={() => openEditModal(tc)}
-            onDelete={() => handleDeleteTestCase(tc.id)}
+            onEdit={canManageTests ? () => openEditModal(tc) : undefined}
+            onDelete={
+              canManageTests ? () => handleDeleteTestCase(tc.id) : undefined
+            }
             onClick={() => navigate(`/testcases/${tc.id}`)}
           />
         ))
       )}
 
-      {showModal && (
+      {showModal && canManageTests && (
         <Modal
           title={editTarget ? "Edit Test Case" : "New Test Case"}
           onClose={() => {
@@ -175,12 +182,14 @@ const ModuleDetailPage = () => {
             onChange={setDescription}
             placeholder="What does this test verify?"
           />
-          <button
-            style={styles.addBtn}
-            onClick={editTarget ? handleUpdate : handleCreate}
-          >
-            {editTarget ? "Update Test Case" : "Create Test Case"}
-          </button>
+          {canManageTests && (
+            <button
+              style={styles.addBtn}
+              onClick={editTarget ? handleUpdate : handleCreate}
+            >
+              {editTarget ? "Update Test Case" : "Create Test Case"}
+            </button>
+          )}
         </Modal>
       )}
     </div>
