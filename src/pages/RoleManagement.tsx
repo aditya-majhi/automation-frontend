@@ -75,6 +75,8 @@ const RolesPage = () => {
         return { bg: "#89b4fa30", color: "#89b4fa", border: "#89b4fa50" };
       case "EXECUTE_PROJECTS":
         return { bg: "#a6e3a130", color: "#a6e3a1", border: "#a6e3a150" };
+      case "DEFINE_ASSIGNED_PROJECTS":
+        return { bg: "#74c7ec30", color: "#74c7ec", border: "#74c7ec50" };
       default:
         return { bg: "#6c708630", color: "#6c7086", border: "#6c708650" };
     }

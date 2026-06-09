@@ -18,6 +18,9 @@ interface Project {
 const ProjectsPage = () => {
   const { hasRole } = useAuth();
   const canManageProjects = hasRole("DEFINE_PROJECTS");
+  const canAccessProjects =
+    hasRole("DEFINE_PROJECTS") || hasRole("DEFINE_ASSIGNED_PROJECTS");
+
   const [projects, setProjects] = useState<Project[]>([]);
   const [editTarget, setEditTarget] = useState<Project | null>(null);
   const [loading, setLoading] = useState(true);
@@ -113,8 +116,8 @@ const ProjectsPage = () => {
     }
   };
 
-  const emptyMessage = canManageProjects
-    ? "No projects yet. Create one to get started."
+  const emptyMessage = canAccessProjects
+    ? "No projects yet."
     : "You don't have any Projects. Ask the Admin to assign projects.";
 
   return (

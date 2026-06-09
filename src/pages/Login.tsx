@@ -24,7 +24,15 @@ const LoginPage = () => {
         return "Username or password is missing.";
       }
 
-      if (status === 401 || apiMessage.includes("invalid credentials")) {
+      if (status === 401 && apiMessage.includes("not registered")) {
+        return "This email is not registered.";
+      }
+
+      if (
+        status === 401 ||
+        apiMessage.includes("wrong username or password") ||
+        apiMessage.includes("invalid credentials")
+      ) {
         return "Wrong username or password.";
       }
 
@@ -38,23 +46,12 @@ const LoginPage = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError("");
     setLoading(true);
-
-    console.log("[LoginPage] submit start", { email });
 
     try {
       await login(email, password);
-
-      console.log("[LoginPage] login resolved", {
-        localStorageToken: localStorage.getItem("token"),
-        localStorageUser: localStorage.getItem("user"),
-      });
-
       navigate("/");
-      console.log("[LoginPage] navigate('/') called");
     } catch (err: unknown) {
-      console.error("[LoginPage] login failed", err);
       setError(getLoginErrorMessage(err));
     } finally {
       setLoading(false);

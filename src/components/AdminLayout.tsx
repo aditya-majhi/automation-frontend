@@ -19,6 +19,7 @@ const AdminLayout = () => {
     { to: "/admin/users", label: "👥 Users" },
     { to: "/admin/roles", label: "🛡️ Roles" },
     { to: "/admin/project-mapping", label: "📁 Project Mapping" },
+    { to: "/admin/project-access", label: "🔐 Project Access" },
   ];
 
   return (

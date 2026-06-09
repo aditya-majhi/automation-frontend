@@ -14,6 +14,7 @@ import UsersPage from "./pages/UserManagement";
 import RolesPage from "./pages/RoleManagement";
 import ProjectMappingPage from "./pages/ProjectMapping";
 import ForgotPasswordPage from "./pages/ForgotPassword";
+import ProjectAccessMatrixPage from "./pages/ProjectAccessMatrix";
 
 const AdminRoute = ({ children }: { children: React.ReactNode }) => {
   const { token, isAdmin, loading } = useAuth();
@@ -27,7 +28,8 @@ const AdminRoute = ({ children }: { children: React.ReactNode }) => {
 const HomeRoute = () => {
   const { hasRole } = useAuth();
 
-  const canAccessProjects = hasRole("DEFINE_PROJECTS");
+  const canAccessProjects =
+    hasRole("DEFINE_PROJECTS") || hasRole("DEFINE_ASSIGNED_PROJECTS");
 
   return canAccessProjects ? (
     <Navigate to="/projects" replace />
@@ -39,7 +41,8 @@ const HomeRoute = () => {
 const ProjectAreaRoute = ({ children }: { children: React.ReactNode }) => {
   const { hasRole } = useAuth();
 
-  const canAccessProjects = hasRole("DEFINE_PROJECTS");
+  const canAccessProjects =
+    hasRole("DEFINE_PROJECTS") || hasRole("DEFINE_ASSIGNED_PROJECTS");
 
   if (!canAccessProjects) {
     return <Navigate to="/executions" replace />;
@@ -131,6 +134,10 @@ const App = () => {
             <Route path="users" element={<UsersPage />} />
             <Route path="roles" element={<RolesPage />} />
             <Route path="project-mapping" element={<ProjectMappingPage />} />
+            <Route
+              path="project-access"
+              element={<ProjectAccessMatrixPage />}
+            />
           </Route>
 
           <Route path="*" element={<Navigate to="/" replace />} />

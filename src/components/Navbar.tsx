@@ -5,7 +5,8 @@ const Navbar = () => {
   const { user, logout, isAdmin, hasRole } = useAuth();
   const navigate = useNavigate();
 
-  const canAccessProjects = hasRole("DEFINE_PROJECTS");
+  const canAccessProjects =
+    hasRole("DEFINE_PROJECTS") || hasRole("DEFINE_ASSIGNED_PROJECTS");
 
   const handleLogout = () => {
     logout();

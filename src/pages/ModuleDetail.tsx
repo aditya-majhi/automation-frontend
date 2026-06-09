@@ -25,7 +25,8 @@ interface ModuleMeta {
 const ModuleDetailPage = () => {
   const { moduleId } = useParams<{ moduleId: string }>();
   const { hasRole } = useAuth();
-  const canManageTests = hasRole("DEFINE_PROJECTS");
+  const canManageTests =
+    hasRole("DEFINE_PROJECTS") || hasRole("DEFINE_ASSIGNED_PROJECTS");
   const navigate = useNavigate();
   const [moduleMeta, setModuleMeta] = useState<ModuleMeta | null>(null);
   const [testCases, setTestCases] = useState<TestCase[]>([]);

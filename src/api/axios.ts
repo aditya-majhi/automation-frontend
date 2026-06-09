@@ -40,6 +40,15 @@ const flushQueue = (token: string | null) => {
   pendingQueue = [];
 };
 
+const isPublicAuthEndpoint = (url?: string) =>
+  !!url &&
+  [
+    "/auth/login",
+    "/auth/register",
+    "/auth/forgot-password",
+    "/auth/reset-password",
+  ].some((path) => url.includes(path));
+
 api.interceptors.response.use(
   (response) => response,
   async (error: AxiosError) => {
@@ -47,6 +56,10 @@ api.interceptors.response.use(
     const status = error.response?.status;
 
     if (status !== 401) {
+      return Promise.reject(error);
+    }
+
+    if (isPublicAuthEndpoint(originalRequest.url)) {
       return Promise.reject(error);
     }
 

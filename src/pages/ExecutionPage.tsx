@@ -460,6 +460,23 @@ export default function ExecutionPage() {
     return String(value).toLowerCase();
   };
 
+  //To Delete a batch execution
+  const handleDeleteBatch = async (row: ExecutionBatchRow) => {
+    if (!window.confirm("Delete this execution batch?")) return;
+    try {
+      setError("");
+      await executionService.deleteExecutionJob(row.executionId);
+      if (activeBatchId === row.executionId) {
+        dispatch(closeBatchModal());
+      }
+      await refreshBatchRows();
+    } catch (e: any) {
+      setError(
+        e?.response?.data?.message || "Failed to delete execution batch",
+      );
+    }
+  };
+
   const refreshBatchRows = useCallback(async () => {
     const rows = await executionService.listExecutionJobs();
     dispatch(setBatchRows(Array.isArray(rows) ? rows : []));
@@ -1352,13 +1369,22 @@ export default function ExecutionPage() {
                       </td>
 
                       <td style={styles.td}>
-                        <button
-                          type="button"
-                          style={styles.linkBtn}
-                          onClick={() => openRerunModal(row)}
-                        >
-                          Rerun
-                        </button>
+                        <div style={{ display: "flex", gap: 10 }}>
+                          <button
+                            type="button"
+                            style={styles.linkBtn}
+                            onClick={() => openRerunModal(row)}
+                          >
+                            Rerun
+                          </button>
+                          <button
+                            type="button"
+                            style={{ ...styles.linkBtn, color: "#f38ba8" }}
+                            onClick={() => handleDeleteBatch(row)}
+                          >
+                            Delete
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );

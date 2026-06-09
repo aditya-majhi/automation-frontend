@@ -86,6 +86,8 @@ const ProjectMappingPage = () => {
         return { bg: "#89b4fa30", color: "#89b4fa" };
       case "EXECUTE_PROJECTS":
         return { bg: "#a6e3a130", color: "#a6e3a1" };
+      case "DEFINE_ASSIGNED_PROJECTS":
+        return { bg: "#74c7ec30", color: "#74c7ec" };
       default:
         return { bg: "#6c708630", color: "#6c7086" };
     }

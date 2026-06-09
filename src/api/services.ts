@@ -387,4 +387,9 @@ export const executionService = {
     const payload = res.data?.data || {};
     return Array.isArray(payload.batches) ? payload.batches : [];
   },
+
+  deleteExecutionJob: async (executionId: string) => {
+    const res = await api.delete(`/executions/${executionId}`);
+    return res.data?.data || null;
+  },
 };

@@ -16,7 +16,8 @@ interface Module {
 const ProjectDetailPage = () => {
   const { projectId } = useParams<{ projectId: string }>();
   const { hasRole } = useAuth();
-  const canManageProjects = hasRole("DEFINE_PROJECTS");
+  const canManageProjects =
+    hasRole("DEFINE_PROJECTS") || hasRole("DEFINE_ASSIGNED_PROJECTS");
   const navigate = useNavigate();
   const [modules, setModules] = useState<Module[]>([]);
   const [projectName, setProjectName] = useState("");
