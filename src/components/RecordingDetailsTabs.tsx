@@ -1773,6 +1773,149 @@ function pickSelector(obj: any) {
   );
 }
 
+function getStepAction(step?: Step): string {
+  return String(step?.action || step?.type || "")
+    .trim()
+    .toLowerCase();
+}
+
+function isStoreOrCapture(step?: Step): boolean {
+  const a = getStepAction(step);
+  return a === "store_variable" || a === "capture";
+}
+
+function isAutoLikeName(name?: string | null): boolean {
+  return /^auto_?\d*$/i.test(String(name || "").trim());
+}
+
+function isWeakPageName(v?: string | null): boolean {
+  const p = normalize(v);
+  return !p || p === "-" || p === "page" || p === "unknown";
+}
+
+function inferStablePage(step?: Step): string {
+  const p1 = String(step?.pageName || "").trim();
+  if (!isWeakPageName(p1)) return normalize(p1);
+
+  const p2 = String(
+    step?.contextMeta?.pageName || step?.context?.pageName || "",
+  ).trim();
+  if (!isWeakPageName(p2)) return normalize(p2);
+
+  const fragment = inferUrlFragment(step?.pageUrl);
+  return fragment ? normalize(fragment) : "";
+}
+
+function getStepLocatorKey(step?: Step): string {
+  if (!step) return "";
+  const s = normalizeSelector(step);
+  const primary =
+    (s?.relativeXPath && sanitizePythonXPath(s.relativeXPath)) ||
+    (s?.xpath && sanitizePythonXPath(s.xpath)) ||
+    s?.css ||
+    "";
+  return normalize(primary);
+}
+
+function getScopedLocatorKey(step?: Step): string {
+  const locator = getStepLocatorKey(step);
+  if (!locator) return "";
+  const page = inferStablePage(step);
+  return page ? page + "|" + locator : "";
+}
+
+function getStepVarName(step?: Step): string {
+  return String(
+    step?.variableName ?? step?.contextMeta?.variableName ?? "",
+  ).trim();
+}
+
+type LocatorQueues = {
+  scoped: Map<string, string[]>;
+  global: Map<string, string[]>;
+};
+
+function buildLocatorVarQueues(steps: Step[]): LocatorQueues {
+  const scoped = new Map<string, string[]>();
+  const global = new Map<string, string[]>();
+
+  for (const step of steps) {
+    if (!isStoreOrCapture(step)) continue;
+
+    const varName = getStepVarName(step);
+    if (!varName || isAutoLikeName(varName)) continue;
+
+    const globalKey = getStepLocatorKey(step);
+    if (globalKey) {
+      const list = global.get(globalKey) || [];
+      list.push(varName);
+      global.set(globalKey, list);
+    }
+
+    const scopedKey = getScopedLocatorKey(step);
+    if (scopedKey) {
+      const list = scoped.get(scopedKey) || [];
+      list.push(varName);
+      scoped.set(scopedKey, list);
+    }
+  }
+
+  return { scoped, global };
+}
+
+function resolveVarNameForInputStep(
+  step: Step,
+  namedVarName: string | undefined,
+  locatorVarQueues: LocatorQueues,
+): string {
+  const direct = getStepVarName(step);
+  const named = String(namedVarName || "").trim();
+
+  const scopedKey = getScopedLocatorKey(step);
+  if (scopedKey) {
+    const q = locatorVarQueues.scoped.get(scopedKey);
+    if (q && q.length > 0) return String(q.shift() || "").trim();
+  }
+
+  const globalKey = getStepLocatorKey(step);
+  if (globalKey) {
+    const q = locatorVarQueues.global.get(globalKey);
+    if (q && q.length > 0) return String(q.shift() || "").trim();
+  }
+
+  return direct || named;
+}
+
+/**
+ * Same-locator-key first:
+ * 1) exact canonical locator match queue (FIFO)
+ * 2) step variableName/contextMeta.variableName
+ * 3) named variable table match
+ * 4) empty => caller decides fallback
+ */
+function resolveVarNameForStep(
+  step: Step,
+  namedVarName: string | undefined,
+  locatorVarQueues: Map<string, string[]>,
+): string {
+  const direct = getStepVarName(step);
+  const named = String(namedVarName || "").trim();
+
+  if (isStoreOrCapture(step)) {
+    return direct || named;
+  }
+
+  const key = getCanonicalLocatorKey(step);
+  if (key) {
+    const queue = locatorVarQueues.get(key);
+    if (queue && queue.length > 0) {
+      return String(queue.shift() || "").trim();
+    }
+  }
+
+  return direct || named;
+}
+
 /**
  * Find user-named variable matching step by selector + pageName
  */
@@ -1784,19 +1927,10 @@ function findNamedVariable(
   const stepPage = normalize(step.pageName || step.pageUrl);
 
   return variables.find((v) => {
-    if (!v.name) return false;
-    const varSel = normalize(pickSelector(v));
-    const varPage = normalize(v.pageName || v.pageUrl);
-    const selectorMatch = stepSel && varSel && stepSel === varSel;
-    const pageMatch = !stepPage || !varPage || stepPage === varPage;
-    return selectorMatch && pageMatch;
+    const vSel = normalize(pickSelector(v));
+    const vPage = normalize(v.pageName || v.pageUrl);
+    return stepSel && stepSel === vSel && stepPage === vPage;
   });
-}
-
-function getStepLocatorKey(step?: Step): string {
-  if (!step) return "";
-  const s = normalizeSelector(step);
-  return s?.relativeXPath || s?.xpath || s?.css || "";
 }
 
 function inferUrlFragment(rawUrl?: string): string | null {
@@ -1921,6 +2055,7 @@ function generateFullPythonScriptWithVariables(
 
   const steps = rawSteps;
   const pageUrl = steps[0]?.pageUrl || "https://example.com";
+  const locatorVarQueues = buildLocatorVarQueues(steps);
 
   const lines: string[] = [
     "# Generated by Automation Recorder",
@@ -1953,21 +2088,16 @@ function generateFullPythonScriptWithVariables(
   ];
 
   steps.forEach((step, index) => {
-    if (shouldSkipDuplicateStoreVariableStep(step, index, steps)) return;
-
-    const prev = index > 0 ? steps[index - 1] : undefined;
-    const next = index < steps.length - 1 ? steps[index + 1] : undefined;
-
-    const stepLines = generatePythonStepWithVariable(
+    const code = generatePythonStepWithVariable(
       step,
       index,
       variables,
       pref,
-      prev,
-      next,
+      steps[index - 1],
+      steps[index + 1],
+      locatorVarQueues,
     );
-
-    if (stepLines?.length) lines.push(...stepLines);
+    if (code?.length) lines.push(...code);
   });
 
   return lines.join("\n");
@@ -1980,6 +2110,7 @@ function generatePythonStepWithVariable(
   pref: LocatorPref = "relativeXPath",
   _prevStep?: Step,
   _nextStep?: Step,
+  locatorVarQueues: LocatorQueues = { scoped: new Map(), global: new Map() },
 ): string[] | null {
   const action = (step.action || step.type || "").toLowerCase();
   const lines: string[] = [];
@@ -1995,18 +2126,9 @@ function generatePythonStepWithVariable(
   );
 
   const model = toActionModel(step, pref);
-  if (!model) {
-    lines.push("    # Preserved step: no actionable locator/model generated");
-    return lines;
-  }
+  if (!model) return null;
 
   const namedVar = findNamedVariable(step, variables);
-  const stepVarName = String(
-    step.variableName ?? step.contextMeta?.variableName ?? "",
-  ).trim();
-
-  const varName =
-    stepVarName || (namedVar && namedVar.name) || "auto_" + (index + 1);
 
   const best = getBestXPathLocatorForModel(step, pref);
 
@@ -2015,11 +2137,7 @@ function generatePythonStepWithVariable(
     sanitizePythonXPath(fallbackSelector?.relativeXPath || undefined) ||
     sanitizePythonXPath(fallbackSelector?.xpath || undefined);
 
-  if (!best && !fallbackXPath) {
-    lines.push("    # Preserved step but no selector was available");
-    lines.push("    # TODO: provide locator for this step");
-    return lines;
-  }
+  if (!best && !fallbackXPath) return lines;
 
   const chosenXPath = best?.locator || fallbackXPath!;
   const pyBy = "By.XPATH";
@@ -2080,28 +2198,105 @@ function generatePythonStepWithVariable(
     return lines;
   }
 
+  // Input action handling - with date/datetime normalization
   if (action === "input") {
-    lines.push('    _val = str(Row["' + escapePy(varName) + '"])');
-    lines.push(
-      "    el = WebDriverWait(self.driver, 12).until(EC.visibility_of_element_located((" +
-        pyBy +
-        ", " +
-        pyLocator +
-        ")))",
-    );
+    const isDateLikeInput =
+      step.inputType === "date" ||
+      step.inputType === "datetime-local" ||
+      step.inputType === "time";
 
-    if (isNativeSelectStep(step)) {
-      lines.push("    Select(el).select_by_visible_text(_val)");
+    // Resolve variable name if this step should use a variable
+    let varName = resolveVarNameForInputStep(step, undefined, locatorVarQueues);
+
+    console.log({ varName, step });
+
+    if (isDateLikeInput && varName) {
+      // Date inputs from variables - normalize format and dispatch event
+      const lines: string[] = [];
+
+      // Normalize date value (handle both Excel datetime and YYYY-MM-DD formats)
+      lines.push(`# Normalize date format for ${varName}`);
+      lines.push(`${varName}_value = ${varName}`);
+      lines.push(`if isinstance(${varName}_value, str):`);
+      lines.push(
+        `    # Handle Excel datetime format (e.g., "2025-01-15 00:00:00" -> "2025-01-15")`,
+      );
+      lines.push(`    if " " in ${varName}_value:`);
+      lines.push(`        ${varName}_value = ${varName}_value.split(" ")[0]`);
+      lines.push(
+        `    # Handle slash-separated dates (e.g., "01/15/2025" -> "2025-01-15")`,
+      );
+      lines.push(`    if "/" in ${varName}_value:`);
+      lines.push(`        parts = ${varName}_value.split("/")`);
+      lines.push(`        if len(parts) == 3:`);
+      lines.push(`            m, d, y = parts`);
+      lines.push(
+        `            ${varName}_value = f"{y}-{m.zfill(2)}-{d.zfill(2)}"`,
+      );
+      lines.push(``);
+
+      // Set value and dispatch events
+      lines.push(`el = driver.find_element(${pyBy}, ${pyLocator})`);
+      lines.push(
+        `driver.execute_script("arguments[0].value = arguments[1];", el, ${varName}_value)`,
+      );
+      lines.push(
+        `driver.execute_script("arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", el)`,
+      );
+      lines.push(
+        `driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", el)`,
+      );
+      lines.push(`time.sleep(0.5)`);
+
+      return lines;
+    } else if (isDateLikeInput) {
+      // Literal date value
+      let dateValue = step.value || "";
+      if (typeof dateValue === "string") {
+        // Normalize format
+        if (dateValue.includes(" ")) {
+          dateValue = dateValue.split(" ")[0];
+        }
+        if (dateValue.includes("/")) {
+          const parts = dateValue.split("/");
+          if (parts.length === 3) {
+            const [m, d, y] = parts;
+            dateValue = `${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+          }
+        }
+      }
+
+      return [
+        `el = driver.find_element(${pyBy}, ${pyLocator})`,
+        `driver.execute_script("arguments[0].value = arguments[1];", el, "${dateValue}")`,
+        `driver.execute_script("arguments[0].dispatchEvent(new Event('change', { bubbles: true }));", el)`,
+        `driver.execute_script("arguments[0].dispatchEvent(new Event('input', { bubbles: true }));", el)`,
+        `time.sleep(0.5)`,
+      ];
+    } else if (varName) {
+      // Regular input with variable
+      return [
+        `el = driver.find_element(${pyBy}, ${pyLocator})`,
+        `el.clear()`,
+        `el.send_keys(str(${varName}))`,
+        `time.sleep(0.3)`,
+      ];
     } else {
-      lines.push("    el.click()");
-      lines.push("    el.clear()");
-      lines.push("    el.send_keys(_val)");
+      // Regular input with literal value
+      return [
+        `el = driver.find_element(${pyBy}, ${pyLocator})`,
+        `el.clear()`,
+        `el.send_keys("${escapePy(step.value)}")`,
+        `time.sleep(0.3)`,
+      ];
     }
-
-    return lines;
   }
 
   if (action === "store_variable") {
+    const directVar =
+      getStepVarName(step) || String(namedVar?.name || "").trim();
+    const varName = directVar || "auto_" + (index + 1);
+
     const tag = (step.targetTag || "").toLowerCase();
     const type = (step.inputType || "").toLowerCase();
     const isInputLike =
@@ -2166,7 +2361,15 @@ function generatePythonStepWithVariable(
   }
 
   if (action === "select") {
-    if (isNativeSelectStep(step) && step.value != null) {
+    if (isNativeSelectStep(step)) {
+      const resolvedVar = resolveVarNameForInputStep(
+        step,
+        namedVar?.name,
+        locatorVarQueues,
+      );
+      const varName = resolvedVar || "auto_" + (index + 1);
+
+      lines.push('    _val = str(Row["' + escapePy(varName) + '"])');
       lines.push(
         "    el = WebDriverWait(self.driver, 12).until(EC.visibility_of_element_located((" +
           pyBy +
@@ -2174,11 +2377,7 @@ function generatePythonStepWithVariable(
           pyLocator +
           ")))",
       );
-      lines.push(
-        '    Select(el).select_by_visible_text("' +
-          escapePy(String(step.value)) +
-          '")',
-      );
+      lines.push("    Select(el).select_by_visible_text(_val)");
     } else {
       lines.push(
         "    WebDriverWait(self.driver, 12).until(EC.element_to_be_clickable((" +
