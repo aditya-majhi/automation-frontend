@@ -354,8 +354,19 @@ export default function ExecutionPage() {
   >({});
   const [rerunBusy, setRerunBusy] = useState(false);
 
+  //To check if the batch is running for button disable
+  const isBatchRunning = (row: ExecutionBatchRow) => {
+    const s = String(row.status || "").toLowerCase();
+    const d = String(row.displayStatus || "").toLowerCase();
+    return s === "running" || d === "running";
+  };
+
   //Functions for Rerun
   const openRerunModal = async (row: ExecutionBatchRow) => {
+    if (isBatchRunning(row)) {
+      setError("Cannot rerun while this batch is running");
+      return;
+    }
     try {
       setError("");
       const data = await executionService.getRerunOptions(row.executionId);
@@ -462,6 +473,10 @@ export default function ExecutionPage() {
 
   //To Delete a batch execution
   const handleDeleteBatch = async (row: ExecutionBatchRow) => {
+    if (isBatchRunning(row)) {
+      setError("Cannot delete while this batch is running");
+      return;
+    }
     if (!window.confirm("Delete this execution batch?")) return;
     try {
       setError("");
@@ -1294,6 +1309,7 @@ export default function ExecutionPage() {
                     row.status || "queued",
                   ).toLowerCase();
                   const color = STATUS_COLORS[rowStatus] || "#89dceb";
+                  const rowRunning = isBatchRunning(row);
 
                   return (
                     <tr key={row.executionId} style={styles.tr}>
@@ -1372,15 +1388,28 @@ export default function ExecutionPage() {
                         <div style={{ display: "flex", gap: 10 }}>
                           <button
                             type="button"
-                            style={styles.linkBtn}
+                            style={{
+                              ...styles.linkBtn,
+                              opacity: rowRunning ? 0.45 : 1,
+                              cursor: rowRunning ? "not-allowed" : "pointer",
+                            }}
                             onClick={() => openRerunModal(row)}
+                            disabled={rowRunning}
+                            title={rowRunning ? "Batch is running" : "Rerun"}
                           >
                             Rerun
                           </button>
                           <button
                             type="button"
-                            style={{ ...styles.linkBtn, color: "#f38ba8" }}
+                            style={{
+                              ...styles.linkBtn,
+                              color: "#f38ba8",
+                              opacity: rowRunning ? 0.45 : 1,
+                              cursor: rowRunning ? "not-allowed" : "pointer",
+                            }}
                             onClick={() => handleDeleteBatch(row)}
+                            disabled={rowRunning}
+                            title={rowRunning ? "Batch is running" : "Delete"}
                           >
                             Delete
                           </button>

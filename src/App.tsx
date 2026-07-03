@@ -30,12 +30,11 @@ const HomeRoute = () => {
 
   const canAccessProjects =
     hasRole("DEFINE_PROJECTS") || hasRole("DEFINE_ASSIGNED_PROJECTS");
+  const canAccessExecutions = hasRole("EXECUTE_PROJECTS");
 
-  return canAccessProjects ? (
-    <Navigate to="/projects" replace />
-  ) : (
-    <Navigate to="/executions" replace />
-  );
+  if (canAccessProjects) return <Navigate to="/projects" replace />;
+  if (canAccessExecutions) return <Navigate to="/executions" replace />;
+  return <Navigate to="/login" replace />;
 };
 
 const ProjectAreaRoute = ({ children }: { children: React.ReactNode }) => {
@@ -43,9 +42,26 @@ const ProjectAreaRoute = ({ children }: { children: React.ReactNode }) => {
 
   const canAccessProjects =
     hasRole("DEFINE_PROJECTS") || hasRole("DEFINE_ASSIGNED_PROJECTS");
+  const canAccessExecutions = hasRole("EXECUTE_PROJECTS");
 
   if (!canAccessProjects) {
-    return <Navigate to="/executions" replace />;
+    return (
+      <Navigate to={canAccessExecutions ? "/executions" : "/login"} replace />
+    );
+  }
+
+  return <>{children}</>;
+};
+
+const ExecutionAreaRoute = ({ children }: { children: React.ReactNode }) => {
+  const { hasRole } = useAuth();
+
+  const canAccessExecutions = hasRole("EXECUTE_PROJECTS");
+  const canAccessProjects =
+    hasRole("DEFINE_PROJECTS") || hasRole("DEFINE_ASSIGNED_PROJECTS");
+
+  if (!canAccessExecutions) {
+    return <Navigate to={canAccessProjects ? "/projects" : "/login"} replace />;
   }
 
   return <>{children}</>;
@@ -117,7 +133,9 @@ const App = () => {
             path="/executions"
             element={
               <ProtectedRoute>
-                <ExecutionPage />
+                <ExecutionAreaRoute>
+                  <ExecutionPage />
+                </ExecutionAreaRoute>
               </ProtectedRoute>
             }
           />

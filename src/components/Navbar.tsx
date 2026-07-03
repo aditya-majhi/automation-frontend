@@ -7,6 +7,7 @@ const Navbar = () => {
 
   const canAccessProjects =
     hasRole("DEFINE_PROJECTS") || hasRole("DEFINE_ASSIGNED_PROJECTS");
+  const canAccessExecutions = hasRole("EXECUTE_PROJECTS");
 
   const handleLogout = () => {
     logout();
@@ -26,9 +27,11 @@ const Navbar = () => {
               Projects
             </Link>
           )}
-          <Link to="/executions" style={styles.navLink}>
-            Executions
-          </Link>
+          {canAccessExecutions && (
+            <Link to="/executions" style={styles.navLink}>
+              Executions
+            </Link>
+          )}
         </div>
       </div>
 

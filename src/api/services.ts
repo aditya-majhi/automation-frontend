@@ -217,6 +217,10 @@ export const adminService = {
     const res = await api.get(`/api/admin/users/${id}`);
     return res.data.data;
   },
+  getAvailableProjectsForUser: async (userId: string) => {
+    const res = await api.get(`/api/admin/users/${userId}/projects/available`);
+    return res.data.data;
+  },
   createUser: async (data: {
     email: string;
     password: string;

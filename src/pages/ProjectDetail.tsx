@@ -11,6 +11,11 @@ interface Module {
   name: string;
   description?: string;
   createdAt: string;
+  creator?: {
+    id: string;
+    name: string;
+    email: string;
+  };
 }
 
 const ProjectDetailPage = () => {
@@ -77,8 +82,8 @@ const ProjectDetailPage = () => {
       setDescription("");
       setShowModal(false);
       fetchModules();
-    } catch {
-      setError("Failed to create module");
+    } catch (err: any) {
+      setError(err?.response?.data?.message || "Failed to create module");
     }
   };
 
@@ -95,8 +100,8 @@ const ProjectDetailPage = () => {
       setName("");
       setDescription("");
       await fetchModules();
-    } catch {
-      setError("Failed to update module");
+    } catch (err: any) {
+      setError(err?.response?.data?.message || "Failed to update module");
     }
   };
 
@@ -139,9 +144,12 @@ const ProjectDetailPage = () => {
           <Card
             key={m.id}
             title={m.name}
-            subtitle={
-              m.description || new Date(m.createdAt).toLocaleDateString()
-            }
+            subtitle={[
+              m.description || new Date(m.createdAt).toLocaleDateString(),
+              m.creator?.name ? `Created by ${m.creator.name}` : null,
+            ]
+              .filter(Boolean)
+              .join(" • ")}
             onEdit={canManageProjects ? () => openEditModal(m) : undefined}
             onDelete={
               canManageProjects ? () => handleDeleteModule(m.id) : undefined

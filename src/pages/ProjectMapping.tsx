@@ -52,6 +52,7 @@ const ProjectMappingPage = () => {
       );
       setSuccess("Projects assigned successfully");
       setSelectedProjectOptions([]);
+      await fetchAvailableProjectsForUser(targetUserId);
       setTimeout(() => setSuccess(""), 3000);
     } catch (err: any) {
       setError(err.response?.data?.message || err.message);
@@ -62,19 +63,43 @@ const ProjectMappingPage = () => {
     fetchInitialData();
   }, []);
 
+  useEffect(() => {
+    if (!targetUserId) {
+      setProjects([]);
+      setSelectedProjectOptions([]);
+      return;
+    }
+
+    setSelectedProjectOptions([]);
+    fetchAvailableProjectsForUser(targetUserId);
+  }, [targetUserId]);
+
   const fetchInitialData = async () => {
     try {
       setLoading(true);
-      const [projectsData, usersData] = await Promise.all([
-        projectService.getAll(),
-        adminService.getUsers(),
-      ]);
-      setProjects(projectsData);
+      const usersData = await adminService.getUsers();
       setUsers(usersData);
+      setProjects([]);
     } catch (err: any) {
       setError(err.message || "Failed to load data");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchAvailableProjectsForUser = async (userId: string) => {
+    try {
+      setError("");
+      const projectsData =
+        await adminService.getAvailableProjectsForUser(userId);
+      setProjects(projectsData || []);
+    } catch (err: any) {
+      setProjects([]);
+      setError(
+        err?.response?.data?.message ||
+          err.message ||
+          "Failed to load projects",
+      );
     }
   };
 

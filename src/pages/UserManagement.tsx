@@ -95,6 +95,11 @@ const UsersPage = () => {
           setError("Password is required");
           return;
         }
+        if (formRoles.length === 0) {
+          setError("Please select at least one role to create a user.");
+          return;
+        }
+
         await adminService.createUser({
           name: formName,
           email: formEmail,

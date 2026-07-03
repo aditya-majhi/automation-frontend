@@ -11,6 +11,11 @@ interface TestCase {
   name: string;
   description?: string;
   createdAt: string;
+  creator?: {
+    id: string;
+    name: string;
+    email: string;
+  };
 }
 
 interface ModuleMeta {
@@ -86,8 +91,8 @@ const ModuleDetailPage = () => {
       setDescription("");
       setShowModal(false);
       fetchTestCases();
-    } catch {
-      setError("Failed to create test case");
+    } catch (err: any) {
+      setError(err?.response?.data?.message || "Failed to create test case");
     }
   };
 
@@ -104,8 +109,8 @@ const ModuleDetailPage = () => {
       setName("");
       setDescription("");
       await fetchTestCases();
-    } catch {
-      setError("Failed to update test case");
+    } catch (err: any) {
+      setError(err?.response?.data?.message || "Failed to update test case");
     }
   };
 
@@ -151,9 +156,12 @@ const ModuleDetailPage = () => {
           <Card
             key={tc.id}
             title={tc.name}
-            subtitle={
-              tc.description || new Date(tc.createdAt).toLocaleDateString()
-            }
+            subtitle={[
+              tc.description || new Date(tc.createdAt).toLocaleDateString(),
+              tc.creator?.name ? `Created by ${tc.creator.name}` : null,
+            ]
+              .filter(Boolean)
+              .join(" • ")}
             onEdit={canManageTests ? () => openEditModal(tc) : undefined}
             onDelete={
               canManageTests ? () => handleDeleteTestCase(tc.id) : undefined

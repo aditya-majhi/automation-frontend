@@ -19,10 +19,10 @@ const RegisterPage = () => {
     try {
       await register(name, email, password);
       navigate("/");
-    } catch (err: unknown) {
-      const msg =
-        err instanceof Error ? err.message : "Registration failed. Try again.";
-      setError(msg);
+    } catch (error: any) {
+      const message =
+        error?.response?.data?.message || "Registration failed. Try Again!";
+      setError(message);
     } finally {
       setLoading(false);
     }
