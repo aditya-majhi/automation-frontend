@@ -18,6 +18,7 @@ type Step = {
   context?: any;
   contextMeta?: any;
   inputType?: string;
+  captureMode?: string;
   checked?: boolean;
   fieldName?: string;
   variableName?: string;
@@ -40,6 +41,7 @@ type Variable = {
   value?: any;
   targetTag?: string;
   inputType?: string;
+  captureMode?: string;
   enumValues?: Array<{ value: string; label: string }> | null;
   selectedValue?: string | null;
   selectedValues?: string[] | null;
@@ -1830,6 +1832,29 @@ function getStepVarName(step?: Step): string {
   ).trim();
 }
 
+function getStepVarKind(step?: Step): string {
+  return String(step?.variableKind ?? step?.contextMeta?.variableKind ?? "")
+    .trim()
+    .toLowerCase();
+}
+
+function isRowEligibleVar(name?: string | null, kind?: string | null): boolean {
+  const n = String(name || "").trim();
+  if (!n || isAutoLikeName(n)) return false;
+
+  // Never use button/output vars for Row-driven input population
+  if (/^(bt|out)_/i.test(n)) return false;
+
+  const k = String(kind || "")
+    .trim()
+    .toLowerCase();
+
+  // If kind exists, only input-kind is allowed for Row
+  if (k && k !== "input") return false;
+
+  return true;
+}
+
 type LocatorQueues = {
   scoped: Map<string, string[]>;
   global: Map<string, string[]>;
@@ -1843,7 +1868,10 @@ function buildLocatorVarQueues(steps: Step[]): LocatorQueues {
     if (!isStoreOrCapture(step)) continue;
 
     const varName = getStepVarName(step);
-    if (!varName || isAutoLikeName(varName)) continue;
+    const varKind = getStepVarKind(step);
+
+    // Queue only Row-eligible vars (input vars, never bt_/out_)
+    if (!isRowEligibleVar(varName, varKind)) continue;
 
     const globalKey = getStepLocatorKey(step);
     if (globalKey) {
@@ -2166,14 +2194,17 @@ function generatePythonStepWithVariable(
       _nextStep?.type ||
       ""
     ).toLowerCase();
-    const nextVar = String(
-      _nextStep?.variableName ?? _nextStep?.contextMeta?.variableName ?? "",
-    ).trim();
 
     const clickContextType = String(
       step.contextMeta?.type || step.context?.type || "",
     ).toLowerCase();
     const clickTag = String(step.targetTag || "").toLowerCase();
+    const clickCaptureMode = String(
+      step.captureMode ||
+        step.contextMeta?.captureMode ||
+        step.context?.captureMode ||
+        "",
+    ).toLowerCase();
 
     const nextInputType = String(
       _nextStep?.inputType ||
@@ -2181,34 +2212,91 @@ function generatePythonStepWithVariable(
         _nextStep?.context?.inputType ||
         "",
     ).toLowerCase();
+
     const nextContextType = String(
       _nextStep?.contextMeta?.type || _nextStep?.context?.type || "",
+    ).toLowerCase();
+
+    const nextCaptureMode = String(
+      _nextStep?.captureMode ||
+        _nextStep?.contextMeta?.captureMode ||
+        _nextStep?.context?.captureMode ||
+        "",
     ).toLowerCase();
 
     const looksLikeDropdown =
       clickTag === "select" ||
       clickContextType === "dropdown" ||
+      clickCaptureMode === "custom-combobox" ||
+      clickCaptureMode === "select-one" ||
+      clickCaptureMode === "select-multiple" ||
+      nextInputType === "combobox" ||
       nextInputType === "select-one" ||
       nextInputType === "select-multiple" ||
-      nextContextType === "dropdown";
+      nextContextType === "dropdown" ||
+      nextCaptureMode === "custom-combobox" ||
+      nextCaptureMode === "select-one" ||
+      nextCaptureMode === "select-multiple";
+
+    const explicitNextVar = String(
+      _nextStep?.variableName ?? _nextStep?.contextMeta?.variableName ?? "",
+    ).trim();
+
+    const resolvedFromNext = _nextStep
+      ? String(
+          resolveVarNameForInputStep(
+            _nextStep,
+            findNamedVariable(_nextStep, variables)?.name,
+            locatorVarQueues,
+          ) || "",
+        ).trim()
+      : "";
+
+    const dropdownVar = explicitNextVar || resolvedFromNext;
+    const nextVarKind = String(
+      _nextStep?.variableKind ?? _nextStep?.contextMeta?.variableKind ?? "",
+    )
+      .trim()
+      .toLowerCase();
 
     const canDriveDropdownOption =
       looksLikeDropdown &&
       nextAction === "store_variable" &&
-      /^in_/i.test(nextVar);
+      isRowEligibleVar(nextVar, nextVarKind);
 
     if (canDriveDropdownOption) {
-      lines.push('    _expected = str(Row["' + escapePy(nextVar) + '"])');
-      lines.push("    if _expected.strip():");
       lines.push(
-        '      dynamic_option_xpath = f"//*[@role=\\"listbox\\"]//div[normalize-space(.)=\\"{_expected}\\" and @role=\\"option\\"]"',
+        '    _expected = str(Row["' + escapePy(dropdownVar) + '"]).strip()',
+      );
+      lines.push("    if _expected:");
+      lines.push("      _option_candidates = [");
+      lines.push(
+        "        (By.XPATH, f\"//*[@role='listbox']//*[@role='option' and normalize-space(.)='{_expected}']\"),",
       );
       lines.push(
-        "      WebDriverWait(self.driver, 12).until(EC.element_to_be_clickable((By.XPATH, dynamic_option_xpath))).click()",
+        "        (By.XPATH, f\"//*[@role='listbox']//*[contains(normalize-space(.), '{_expected}')]\"),",
       );
-      lines.push("    else:");
       lines.push(
-        "      WebDriverWait(self.driver, 12).until(EC.element_to_be_clickable((" +
+        "        (By.XPATH, f\"//li[contains(normalize-space(.), '{_expected}') and (@role='option' or contains(@class,'option'))]\"),",
+      );
+      lines.push(
+        "        (By.XPATH, f\"//*[@role='option' and contains(normalize-space(.), '{_expected}')]\"),",
+      );
+      lines.push("      ]");
+      lines.push("      _picked = False");
+      lines.push("      for _by, _loc in _option_candidates:");
+      lines.push("        try:");
+      lines.push(
+        "          WebDriverWait(self.driver, 5).until(EC.element_to_be_clickable((_by, _loc))).click()",
+      );
+      lines.push("          _picked = True");
+      lines.push("          break");
+      lines.push("        except Exception:");
+      lines.push("          pass");
+      lines.push("      if _picked:");
+      lines.push("        return");
+      lines.push(
+        "    WebDriverWait(self.driver, 12).until(EC.element_to_be_clickable((" +
           pyBy +
           ", " +
           pyLocator +
@@ -2225,9 +2313,8 @@ function generatePythonStepWithVariable(
 
   if (action === "submit") {
     lines.push(
-      "    el = self.driver.find_element(" + pyBy + ", " + pyLocator + ")",
+      "    self.driver.find_element(" + pyBy + ", " + pyLocator + ").submit()",
     );
-    lines.push("    el.submit()");
     return lines;
   }
 
@@ -2238,7 +2325,6 @@ function generatePythonStepWithVariable(
       locatorVarQueues,
     );
     const resolvedVarTrim = String(resolvedVar || "").trim();
-    const hasRealVar = !!resolvedVarTrim && !isAutoLikeName(resolvedVarTrim);
 
     const inputType = String(
       step.inputType ||
@@ -2247,33 +2333,74 @@ function generatePythonStepWithVariable(
         "",
     ).toLowerCase();
 
+    const isDateLikeInput = [
+      "date",
+      "datetime-local",
+      "month",
+      "time",
+      "week",
+    ].includes(inputType);
+
+    const nextActionForInput = String(
+      _nextStep?.action || _nextStep?.type || "",
+    ).toLowerCase();
+
+    const nextVarForInput = String(
+      _nextStep?.variableName ?? _nextStep?.contextMeta?.variableName ?? "",
+    ).trim();
+
+    const nextVarKindForInput = String(
+      _nextStep?.variableKind ?? _nextStep?.contextMeta?.variableKind ?? "",
+    )
+      .trim()
+      .toLowerCase();
+
+    const sameLocatorAsNextStore =
+      !!_nextStep &&
+      !!getStepLocatorKey(step) &&
+      getStepLocatorKey(step) === getStepLocatorKey(_nextStep);
+
+    const dateFallbackVar =
+      isDateLikeInput &&
+      nextActionForInput === "store_variable" &&
+      sameLocatorAsNextStore &&
+      isRowEligibleVar(nextVarForInput, nextVarKindForInput)
+        ? nextVarForInput
+        : "";
+
+    const effectiveVarName = resolvedVarTrim || dateFallbackVar;
+    const hasRealVar = isRowEligibleVar(effectiveVarName);
+
     const isFileInput =
       step.contextMeta?.requiresRuntimePath === true ||
       step.context?.requiresRuntimePath === true ||
       inputType === "file";
 
     if (hasRealVar) {
-      lines.push('    _val = str(Row["' + escapePy(resolvedVarTrim) + '"])');
+      lines.push('    _val = str(Row["' + escapePy(effectiveVarName) + '"])');
     } else {
       lines.push('    _val = "' + escapePy(String(step.value ?? "")) + '"');
     }
 
-    lines.push(
-      "    el = self.driver.find_element(" + pyBy + ", " + pyLocator + ")",
-    );
-
     if (isFileInput) {
       lines.push(
-        "    # FILE INPUT: using input[type=file] with send_keys only (no upload-button click)",
+        "    WebDriverWait(self.driver, 12).until(EC.presence_of_element_located((" +
+          pyBy +
+          ", " +
+          pyLocator +
+          "))).send_keys(os.path.abspath(_val))",
       );
-      lines.push("    el.send_keys(os.path.abspath(_val))");
-      lines.push("    time.sleep(0.3)");
       return lines;
     }
 
-    lines.push("    el.click()");
-    lines.push("    el.clear()");
-    lines.push("    el.send_keys(_val)");
+    // PUC compact base style: no pre-click/clear in base.
+    lines.push(
+      "    WebDriverWait(self.driver, 12).until(EC.presence_of_element_located((" +
+        pyBy +
+        ", " +
+        pyLocator +
+        "))).send_keys(_val)",
+    );
     return lines;
   }
 
@@ -2282,55 +2409,88 @@ function generatePythonStepWithVariable(
       getStepVarName(step) || String(namedVar?.name || "").trim();
     const varName = directVar || "auto_" + (index + 1);
 
-    const tag = (step.targetTag || "").toLowerCase();
-    const type = (step.inputType || "").toLowerCase();
-    const isInputLike =
-      tag === "input" || tag === "textarea" || tag === "select";
-    const isChoice = type === "checkbox" || type === "radio";
+    const explicitMode = String(
+      step.captureMode ||
+        step.contextMeta?.captureMode ||
+        step.context?.captureMode ||
+        "",
+    ).toLowerCase();
+
+    const inputType = String(
+      step.inputType ||
+        step.contextMeta?.inputType ||
+        step.context?.inputType ||
+        "",
+    ).toLowerCase();
+
+    const targetTag = String(
+      step.targetTag ||
+        step.contextMeta?.targetTag ||
+        step.context?.targetTag ||
+        "",
+    ).toLowerCase();
+
+    const inferredMode =
+      explicitMode ||
+      (inputType === "checkbox"
+        ? "checkbox"
+        : inputType === "radio"
+          ? "radio"
+          : inputType === "select-one"
+            ? "select-one"
+            : inputType === "select-multiple"
+              ? "select-multiple"
+              : inputType === "file"
+                ? "file"
+                : inputType === "textarea"
+                  ? "textarea"
+                  : inputType === "contenteditable"
+                    ? "contenteditable"
+                    : targetTag === "select"
+                      ? "select-one"
+                      : targetTag === "textarea"
+                        ? "textarea"
+                        : "text-input");
 
     lines.push(
-      "    el = WebDriverWait(self.driver, 12).until(EC.presence_of_element_located((" +
+      "    _el = WebDriverWait(self.driver, 12).until(EC.presence_of_element_located((" +
         pyBy +
         ", " +
         pyLocator +
         ")))",
     );
 
-    if (isChoice) {
-      lines.push(
-        '    self.vars["' + varName + '"] = str(el.is_selected()).strip()',
-      );
-    } else if (isInputLike) {
-      lines.push('    _v = str(el.get_attribute("value") or "").strip()');
-      lines.push("    if not _v:");
-      lines.push(
-        '      _v = str(el.get_attribute("aria-valuetext") or "").strip()',
-      );
-      lines.push("    if not _v:");
-      lines.push('      _v = str(el.text or "").strip()');
-      lines.push('    self.vars["' + varName + '"] = _v');
-    } else {
-      lines.push(
-        '    _v = str(el.get_attribute("aria-valuetext") or "").strip()',
-      );
-      lines.push("    if not _v:");
-      lines.push('      _v = str(el.text or "").strip()');
-      lines.push('    self.vars["' + varName + '"] = _v');
-    }
+    const readExprByMode: Record<string, string> = {
+      checkbox: "str(_el.is_selected()).strip()",
+      radio:
+        "str(_el.get_attribute('value') or _el.get_attribute('aria-label') or _el.text or '').strip()",
+      "select-one": "str(Select(_el).first_selected_option.text or '').strip()",
+      "select-multiple":
+        "\"|\".join([str(o.text or '').strip() for o in Select(_el).all_selected_options])",
+      file: "str(_el.get_attribute('value') or '').strip()",
+      textarea: "str(_el.get_attribute('value') or _el.text or '').strip()",
+      contenteditable: "str(_el.text or '').strip()",
+      "custom-combobox":
+        "str(_el.get_attribute('aria-valuetext') or _el.get_attribute('value') or _el.text or '').strip()",
+      "text-input": "str(_el.get_attribute('value') or '').strip()",
+    };
+
+    const readExpr =
+      readExprByMode[inferredMode] ||
+      "str(_el.get_attribute('value') or _el.get_attribute('aria-valuetext') or _el.text or '').strip()";
+
+    lines.push('    self.vars["' + escapePy(varName) + '"] = ' + readExpr);
 
     return lines;
   }
 
   if (action === "check") {
     lines.push(
-      "    el = WebDriverWait(self.driver, 12).until(EC.presence_of_element_located((" +
+      "    WebDriverWait(self.driver, 12).until(EC.element_to_be_clickable((" +
         pyBy +
         ", " +
         pyLocator +
-        ")))",
-    );
-    lines.push(
-      "    self.driver.find_element(" + pyBy + ", " + pyLocator + ").click()",
+        "))).click()",
     );
     return lines;
   }
@@ -2346,13 +2506,12 @@ function generatePythonStepWithVariable(
 
       lines.push('    _val = str(Row["' + escapePy(varName) + '"])');
       lines.push(
-        "    el = WebDriverWait(self.driver, 12).until(EC.visibility_of_element_located((" +
+        "    Select(WebDriverWait(self.driver, 12).until(EC.visibility_of_element_located((" +
           pyBy +
           ", " +
           pyLocator +
-          ")))",
+          ")))).select_by_visible_text(_val)",
       );
-      lines.push("    Select(el).select_by_visible_text(_val)");
     } else {
       lines.push(
         "    WebDriverWait(self.driver, 12).until(EC.element_to_be_clickable((" +
@@ -2367,13 +2526,12 @@ function generatePythonStepWithVariable(
 
   if (action === "hover") {
     lines.push(
-      "    el = WebDriverWait(self.driver, 12).until(EC.visibility_of_element_located((" +
+      "    ActionChains(self.driver).move_to_element(WebDriverWait(self.driver, 12).until(EC.visibility_of_element_located((" +
         pyBy +
         ", " +
         pyLocator +
-        ")))",
+        ")))).perform()",
     );
-    lines.push("    ActionChains(self.driver).move_to_element(el).perform()");
     return lines;
   }
 

@@ -15,6 +15,11 @@ interface ProjectData {
   id: string;
   name: string;
   description?: string;
+  user?: {
+    id: string;
+    name: string;
+    email: string;
+  };
 }
 
 type SelectOption = { value: string; label: string };
@@ -39,7 +44,9 @@ const ProjectMappingPage = () => {
 
   const projectOptions: SelectOption[] = projects.map((p) => ({
     value: p.id,
-    label: p.name,
+    label: p.user?.name
+      ? p.name + " (Created by: " + p.user.name + ")"
+      : p.name,
   }));
 
   const handleAssignProjectsToUser = async () => {
