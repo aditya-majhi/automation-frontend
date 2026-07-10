@@ -2114,6 +2114,8 @@ function generateFullPythonScriptWithVariables(
     "    self.driver.set_window_size(1366, 768)",
   ];
 
+  const scriptState = { lastSavedPageName: "" };
+
   steps.forEach((step, index) => {
     const code = generatePythonStepWithVariable(
       step,
@@ -2123,6 +2125,7 @@ function generateFullPythonScriptWithVariables(
       steps[index - 1],
       steps[index + 1],
       locatorVarQueues,
+      scriptState,
     );
     if (code?.length) lines.push(...code);
   });
@@ -2138,21 +2141,10 @@ function generatePythonStepWithVariable(
   _prevStep?: Step,
   _nextStep?: Step,
   locatorVarQueues: LocatorQueues = { scoped: new Map(), global: new Map() },
+  scriptState: { lastSavedPageName: string },
 ): string[] | null {
   const action = (step.action || step.type || "").toLowerCase();
   const lines: string[] = [];
-
-  const pageDisplay = (s?: Step) =>
-    String(
-      s?.pageName ||
-        s?.pageTitle ||
-        inferUrlFragment(s?.pageUrl) ||
-        s?.pageUrl ||
-        "page",
-    ).trim();
-
-  const prevPage = pageDisplay(_prevStep);
-  const currPage = pageDisplay(step);
 
   lines.push(
     "# Step " +
@@ -2164,10 +2156,34 @@ function generatePythonStepWithVariable(
       "]",
   );
 
-  if (_prevStep && normalize(prevPage) !== normalize(currPage)) {
-    lines.push(
-      "    # PAGE CHANGE: " + escapePy(prevPage) + " -> " + escapePy(currPage),
-    );
+  const isVarSaveStep = action === "store_variable" || action === "capture";
+
+  const currentSavedPage = isVarSaveStep
+    ? String(
+        step.pageName ||
+          step.contextMeta?.pageName ||
+          step.context?.pageName ||
+          "",
+      ).trim()
+    : "";
+
+  if (currentSavedPage && !isWeakPageName(currentSavedPage)) {
+    const prevSavedPage = String(scriptState.lastSavedPageName || "").trim();
+
+    // Add comment only when page name changes between variable-save steps (case-insensitive).
+    if (
+      prevSavedPage &&
+      normalize(prevSavedPage) !== normalize(currentSavedPage)
+    ) {
+      lines.push(
+        "    # PAGE CHANGE: " +
+          escapePy(prevSavedPage) +
+          " -> " +
+          escapePy(currentSavedPage),
+      );
+    }
+
+    scriptState.lastSavedPageName = currentSavedPage;
   }
 
   const model = toActionModel(step, pref);
@@ -2262,7 +2278,7 @@ function generatePythonStepWithVariable(
     const canDriveDropdownOption =
       looksLikeDropdown &&
       nextAction === "store_variable" &&
-      isRowEligibleVar(nextVar, nextVarKind);
+      isRowEligibleVar(dropdownVar, nextVarKind);
 
     if (canDriveDropdownOption) {
       lines.push(
@@ -2325,6 +2341,7 @@ function generatePythonStepWithVariable(
       locatorVarQueues,
     );
     const resolvedVarTrim = String(resolvedVar || "").trim();
+    const hasRealVar = !!resolvedVarTrim && !isAutoLikeName(resolvedVarTrim);
 
     const inputType = String(
       step.inputType ||
@@ -2333,73 +2350,29 @@ function generatePythonStepWithVariable(
         "",
     ).toLowerCase();
 
-    const isDateLikeInput = [
-      "date",
-      "datetime-local",
-      "month",
-      "time",
-      "week",
-    ].includes(inputType);
-
-    const nextActionForInput = String(
-      _nextStep?.action || _nextStep?.type || "",
-    ).toLowerCase();
-
-    const nextVarForInput = String(
-      _nextStep?.variableName ?? _nextStep?.contextMeta?.variableName ?? "",
-    ).trim();
-
-    const nextVarKindForInput = String(
-      _nextStep?.variableKind ?? _nextStep?.contextMeta?.variableKind ?? "",
-    )
-      .trim()
-      .toLowerCase();
-
-    const sameLocatorAsNextStore =
-      !!_nextStep &&
-      !!getStepLocatorKey(step) &&
-      getStepLocatorKey(step) === getStepLocatorKey(_nextStep);
-
-    const dateFallbackVar =
-      isDateLikeInput &&
-      nextActionForInput === "store_variable" &&
-      sameLocatorAsNextStore &&
-      isRowEligibleVar(nextVarForInput, nextVarKindForInput)
-        ? nextVarForInput
-        : "";
-
-    const effectiveVarName = resolvedVarTrim || dateFallbackVar;
-    const hasRealVar = isRowEligibleVar(effectiveVarName);
-
-    const isFileInput =
-      step.contextMeta?.requiresRuntimePath === true ||
-      step.context?.requiresRuntimePath === true ||
-      inputType === "file";
-
     if (hasRealVar) {
-      lines.push('    _val = str(Row["' + escapePy(effectiveVarName) + '"])');
+      lines.push('    _val = str(Row["' + escapePy(resolvedVarTrim) + '"])');
     } else {
       lines.push('    _val = "' + escapePy(String(step.value ?? "")) + '"');
     }
 
-    if (isFileInput) {
+    if (inputType === "file") {
       lines.push(
-        "    WebDriverWait(self.driver, 12).until(EC.presence_of_element_located((" +
+        "    self.driver.find_element(" +
           pyBy +
           ", " +
           pyLocator +
-          "))).send_keys(os.path.abspath(_val))",
+          ").send_keys(os.path.abspath(_val))",
       );
       return lines;
     }
 
-    // PUC compact base style: no pre-click/clear in base.
     lines.push(
-      "    WebDriverWait(self.driver, 12).until(EC.presence_of_element_located((" +
+      "    self.driver.find_element(" +
         pyBy +
         ", " +
         pyLocator +
-        "))).send_keys(_val)",
+        ").send_keys(_val)",
     );
     return lines;
   }
@@ -2409,13 +2382,6 @@ function generatePythonStepWithVariable(
       getStepVarName(step) || String(namedVar?.name || "").trim();
     const varName = directVar || "auto_" + (index + 1);
 
-    const explicitMode = String(
-      step.captureMode ||
-        step.contextMeta?.captureMode ||
-        step.context?.captureMode ||
-        "",
-    ).toLowerCase();
-
     const inputType = String(
       step.inputType ||
         step.contextMeta?.inputType ||
@@ -2423,64 +2389,68 @@ function generatePythonStepWithVariable(
         "",
     ).toLowerCase();
 
-    const targetTag = String(
-      step.targetTag ||
-        step.contextMeta?.targetTag ||
-        step.context?.targetTag ||
+    const captureMode = String(
+      step.captureMode ||
+        step.contextMeta?.captureMode ||
+        step.context?.captureMode ||
         "",
     ).toLowerCase();
 
-    const inferredMode =
-      explicitMode ||
-      (inputType === "checkbox"
-        ? "checkbox"
-        : inputType === "radio"
-          ? "radio"
-          : inputType === "select-one"
-            ? "select-one"
-            : inputType === "select-multiple"
-              ? "select-multiple"
-              : inputType === "file"
-                ? "file"
-                : inputType === "textarea"
-                  ? "textarea"
-                  : inputType === "contenteditable"
-                    ? "contenteditable"
-                    : targetTag === "select"
-                      ? "select-one"
-                      : targetTag === "textarea"
-                        ? "textarea"
-                        : "text-input");
+    const isChoice = inputType === "checkbox" || inputType === "radio";
+    const isDropdownLike =
+      isNativeSelectStep(step) ||
+      captureMode === "custom-combobox" ||
+      captureMode === "select-one" ||
+      captureMode === "select-multiple" ||
+      resolveContext(step) === "dropdown";
+
+    if (isChoice) {
+      lines.push(
+        '    self.vars["' +
+          varName +
+          '"] = str(self.driver.find_element(' +
+          pyBy +
+          ", " +
+          pyLocator +
+          ").is_selected())",
+      );
+      return lines;
+    }
+
+    if (isDropdownLike) {
+      lines.push(
+        '    self.vars["' +
+          varName +
+          '"] = str(self.driver.find_element(' +
+          pyBy +
+          ", " +
+          pyLocator +
+          ").get_attribute('aria-valuetext') or self.driver.find_element(" +
+          pyBy +
+          ", " +
+          pyLocator +
+          ").text or self.driver.find_element(" +
+          pyBy +
+          ", " +
+          pyLocator +
+          ").get_attribute('value') or '')",
+      );
+      return lines;
+    }
 
     lines.push(
-      "    _el = WebDriverWait(self.driver, 12).until(EC.presence_of_element_located((" +
+      '    self.vars["' +
+        varName +
+        '"] = str(self.driver.find_element(' +
         pyBy +
         ", " +
         pyLocator +
-        ")))",
+        ").get_attribute('value') or self.driver.find_element(" +
+        pyBy +
+        ", " +
+        pyLocator +
+        ").text or '')",
     );
-
-    const readExprByMode: Record<string, string> = {
-      checkbox: "str(_el.is_selected()).strip()",
-      radio:
-        "str(_el.get_attribute('value') or _el.get_attribute('aria-label') or _el.text or '').strip()",
-      "select-one": "str(Select(_el).first_selected_option.text or '').strip()",
-      "select-multiple":
-        "\"|\".join([str(o.text or '').strip() for o in Select(_el).all_selected_options])",
-      file: "str(_el.get_attribute('value') or '').strip()",
-      textarea: "str(_el.get_attribute('value') or _el.text or '').strip()",
-      contenteditable: "str(_el.text or '').strip()",
-      "custom-combobox":
-        "str(_el.get_attribute('aria-valuetext') or _el.get_attribute('value') or _el.text or '').strip()",
-      "text-input": "str(_el.get_attribute('value') or '').strip()",
-    };
-
-    const readExpr =
-      readExprByMode[inferredMode] ||
-      "str(_el.get_attribute('value') or _el.get_attribute('aria-valuetext') or _el.text or '').strip()";
-
-    lines.push('    self.vars["' + escapePy(varName) + '"] = ' + readExpr);
-
     return lines;
   }
 
