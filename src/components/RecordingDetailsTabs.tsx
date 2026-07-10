@@ -2254,6 +2254,10 @@ function generatePythonStepWithVariable(
       nextCaptureMode === "select-one" ||
       nextCaptureMode === "select-multiple";
 
+    const explicitCurrentVar = String(
+      step?.variableName ?? step?.contextMeta?.variableName ?? "",
+    ).trim();
+
     const explicitNextVar = String(
       _nextStep?.variableName ?? _nextStep?.contextMeta?.variableName ?? "",
     ).trim();
@@ -2268,17 +2272,16 @@ function generatePythonStepWithVariable(
         ).trim()
       : "";
 
-    const dropdownVar = explicitNextVar || resolvedFromNext;
-    const nextVarKind = String(
-      _nextStep?.variableKind ?? _nextStep?.contextMeta?.variableKind ?? "",
-    )
-      .trim()
-      .toLowerCase();
+    // Prefer explicit mappings; do not require only next store_variable step.
+    const dropdownVar =
+      explicitNextVar || resolvedFromNext || explicitCurrentVar;
 
     const canDriveDropdownOption =
       looksLikeDropdown &&
-      nextAction === "store_variable" &&
-      isRowEligibleVar(dropdownVar, nextVarKind);
+      (nextAction === "store_variable" ||
+        nextAction === "capture" ||
+        nextAction === "select") &&
+      !!dropdownVar;
 
     if (canDriveDropdownOption) {
       lines.push(
@@ -2335,14 +2338,6 @@ function generatePythonStepWithVariable(
   }
 
   if (action === "input") {
-    const resolvedVar = resolveVarNameForInputStep(
-      step,
-      namedVar?.name,
-      locatorVarQueues,
-    );
-    const resolvedVarTrim = String(resolvedVar || "").trim();
-    const hasRealVar = !!resolvedVarTrim && !isAutoLikeName(resolvedVarTrim);
-
     const inputType = String(
       step.inputType ||
         step.contextMeta?.inputType ||
@@ -2350,7 +2345,25 @@ function generatePythonStepWithVariable(
         "",
     ).toLowerCase();
 
-    if (hasRealVar) {
+    const isDateLikeInput =
+      inputType === "date" ||
+      inputType === "datetime" ||
+      inputType === "datetime-local" ||
+      inputType === "time" ||
+      inputType === "month" ||
+      inputType === "week";
+
+    const directVar = String(getStepVarName(step) || "").trim();
+
+    const resolvedVar =
+      isDateLikeInput && directVar
+        ? directVar
+        : resolveVarNameForInputStep(step, namedVar?.name, locatorVarQueues);
+
+    const resolvedVarTrim = String(resolvedVar || "").trim();
+    const hasMappedVar = !!resolvedVarTrim;
+
+    if (hasMappedVar) {
       lines.push('    _val = str(Row["' + escapePy(resolvedVarTrim) + '"])');
     } else {
       lines.push('    _val = "' + escapePy(String(step.value ?? "")) + '"');
@@ -2467,14 +2480,25 @@ function generatePythonStepWithVariable(
 
   if (action === "select") {
     if (isNativeSelectStep(step)) {
+      const directVar = String(getStepVarName(step) || "").trim();
       const resolvedVar = resolveVarNameForInputStep(
         step,
         namedVar?.name,
         locatorVarQueues,
       );
-      const varName = resolvedVar || "auto_" + (index + 1);
+      const varName = String(directVar || resolvedVar || "").trim();
 
-      lines.push('    _val = str(Row["' + escapePy(varName) + '"])');
+      if (varName) {
+        lines.push('    _val = str(Row["' + escapePy(varName) + '"])');
+      } else {
+        const recordedSelected =
+          Array.isArray((step as any).selectedValues) &&
+          (step as any).selectedValues.length
+            ? String((step as any).selectedValues[0] || "")
+            : String((step as any).selectedValue ?? step.value ?? "");
+        lines.push('    _val = "' + escapePy(recordedSelected) + '"');
+      }
+
       lines.push(
         "    Select(WebDriverWait(self.driver, 12).until(EC.visibility_of_element_located((" +
           pyBy +

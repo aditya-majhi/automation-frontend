@@ -53,6 +53,13 @@ type CaseProgress = {
   screenshots?: Array<{ url?: string | null } | string> | null;
 };
 
+type RowArtifact = {
+  rowNumber: number;
+  status?: string;
+  screenshotUrl: string | null;
+  errorJson: unknown | null;
+};
+
 type BatchDetailRow = {
   key: string;
   testCaseId: string;
@@ -63,6 +70,10 @@ type BatchDetailRow = {
   progressText: string;
   screenshotUrl: string | null;
   errorJson: unknown | null;
+  rowArtifacts: RowArtifact[];
+  screenshotCount: number;
+  errorCount: number;
+  stepCount?: number;
 };
 
 type ExecutionBatchRow = {
@@ -169,15 +180,7 @@ function pickScreenshotUrl(raw: any): string | null {
   return null;
 }
 
-function resolveCaseScreenshotFromResult(
-  activeBatchStatus: any,
-  cp: { testCaseId?: string; name?: string },
-): { url: string | null; source: string } {
-  const fromCp = pickScreenshotUrl(cp);
-  if (fromCp) {
-    return { url: fromCp, source: cp?.screenshotSource || "caseProgress" };
-  }
-
+function findCaseResultFromStatus(activeBatchStatus: any, cp: any): any | null {
   const cases = Array.isArray(activeBatchStatus?.result?.cases)
     ? activeBatchStatus.result.cases
     : Array.isArray(activeBatchStatus?.cases)
@@ -196,53 +199,50 @@ function resolveCaseScreenshotFromResult(
     return sameId || sameName;
   });
 
-  if (!matched) return { url: null, source: "none" };
-
-  const rows = Array.isArray(matched?.rows) ? matched.rows : [];
-  for (let i = rows.length - 1; i >= 0; i -= 1) {
-    const rowUrl = pickScreenshotUrl(rows[i]);
-    if (rowUrl) return { url: rowUrl, source: "result.rows" };
-  }
-
-  const fromCase = pickScreenshotUrl(matched);
-  if (fromCase) return { url: fromCase, source: "result.case" };
-
-  return { url: null, source: "none" };
+  return matched || null;
 }
 
-function findCaseErrorFromResult(
+function buildRowArtifactsFromResult(
   activeBatchStatus: any,
   cp: any,
-): unknown | null {
-  if (cp?.latestRawError) return cp.latestRawError;
+): RowArtifact[] {
+  const matched = findCaseResultFromStatus(activeBatchStatus, cp);
 
-  const cases = Array.isArray(activeBatchStatus?.result?.cases)
-    ? activeBatchStatus.result.cases
-    : [];
-
-  const matched = cases.find((c: any) => {
-    const sameId =
-      cp?.testCaseId &&
-      String(c?.testCaseId || "").trim() === String(cp.testCaseId).trim();
-    const sameName =
-      cp?.name &&
-      String(c?.name || "")
-        .trim()
-        .toLowerCase() === String(cp.name).trim().toLowerCase();
-
-    return sameId || sameName;
-  });
-
-  if (!matched) return null;
-
-  if (matched?.latestRawError) return matched.latestRawError;
-
-  const rows = Array.isArray(matched?.rows) ? matched.rows : [];
-  for (let i = rows.length - 1; i >= 0; i -= 1) {
-    if (rows[i]?.rawError) return rows[i].rawError;
+  if (!matched) {
+    const cpShot = pickScreenshotUrl(cp);
+    const cpErr = cp?.latestRawError ?? null;
+    if (!cpShot && !cpErr) return [];
+    return [
+      {
+        rowNumber: Number(cp?.currentRow || 1) || 1,
+        status: String(cp?.status || "").toUpperCase(),
+        screenshotUrl: cpShot,
+        errorJson: cpErr,
+      },
+    ];
   }
 
-  return null;
+  const rows = Array.isArray(matched?.rows) ? matched.rows : [];
+  if (!rows.length) {
+    const caseShot = pickScreenshotUrl(matched) || pickScreenshotUrl(cp);
+    const caseErr = matched?.latestRawError ?? cp?.latestRawError ?? null;
+    if (!caseShot && !caseErr) return [];
+    return [
+      {
+        rowNumber: Number(cp?.currentRow || 1) || 1,
+        status: String(cp?.status || "").toUpperCase(),
+        screenshotUrl: caseShot,
+        errorJson: caseErr,
+      },
+    ];
+  }
+
+  return rows.map((r: any, idx: number) => ({
+    rowNumber: Number(r?.rowNumber || idx + 1),
+    status: String(r?.status || "").toUpperCase(),
+    screenshotUrl: pickScreenshotUrl(r),
+    errorJson: r?.rawError ?? null,
+  }));
 }
 
 function buildBatchDetailRows(activeBatchStatus: any): BatchDetailRow[] {
@@ -251,8 +251,19 @@ function buildBatchDetailRows(activeBatchStatus: any): BatchDetailRow[] {
     : [];
 
   return caseProgress.map((cp: any) => {
-    const screenshot = resolveCaseScreenshotFromResult(activeBatchStatus, cp);
-    const errorJson = findCaseErrorFromResult(activeBatchStatus, cp);
+    const rowArtifacts = buildRowArtifactsFromResult(activeBatchStatus, cp);
+
+    const latestWithScreenshot = [...rowArtifacts]
+      .reverse()
+      .find((r) => Boolean(r.screenshotUrl));
+    const latestWithError = [...rowArtifacts]
+      .reverse()
+      .find((r) => Boolean(r.errorJson));
+
+    const screenshotCount = rowArtifacts.filter((r) =>
+      Boolean(r.screenshotUrl),
+    ).length;
+    const errorCount = rowArtifacts.filter((r) => Boolean(r.errorJson)).length;
 
     return {
       key: cp.testCaseId || cp.name,
@@ -262,8 +273,12 @@ function buildBatchDetailRows(activeBatchStatus: any): BatchDetailRow[] {
       projectName: cp.projectName || "-",
       status: String(cp.status || "queued"),
       progressText: `${Number(cp.currentRow || 0)}/${Number(cp.totalRows || 0)} rows`,
-      screenshotUrl: screenshot.url,
-      errorJson,
+      screenshotUrl: latestWithScreenshot?.screenshotUrl || null,
+      errorJson: latestWithError?.errorJson ?? null,
+      rowArtifacts,
+      screenshotCount,
+      errorCount,
+      stepCount: Number(cp.stepCount || 0),
     };
   });
 }
@@ -337,8 +352,7 @@ export default function ExecutionPage() {
   const [detailPreview, setDetailPreview] = useState<{
     type: "screenshot" | "error";
     title: string;
-    screenshotUrl?: string | null;
-    errorJson?: unknown;
+    rows: RowArtifact[];
   } | null>(null);
 
   //State for rerun
@@ -1553,7 +1567,7 @@ export default function ExecutionPage() {
                           </span>
                         </td>
                         <td style={styles.td}>
-                          {row.screenshotUrl ? (
+                          {row.screenshotCount > 0 ? (
                             <button
                               type="button"
                               style={styles.linkBtn}
@@ -1561,18 +1575,20 @@ export default function ExecutionPage() {
                                 setDetailPreview({
                                   type: "screenshot",
                                   title: row.testCaseName,
-                                  screenshotUrl: row.screenshotUrl,
+                                  rows: row.rowArtifacts.filter((x) =>
+                                    Boolean(x.screenshotUrl),
+                                  ),
                                 })
                               }
                             >
-                              View Screenshot
+                              View Screenshots ({row.screenshotCount})
                             </button>
                           ) : (
                             <span style={styles.treeHint}>Not available</span>
                           )}
                         </td>
                         <td style={styles.td}>
-                          {row.errorJson ? (
+                          {row.errorCount > 0 ? (
                             <button
                               type="button"
                               style={styles.linkBtn}
@@ -1580,11 +1596,13 @@ export default function ExecutionPage() {
                                 setDetailPreview({
                                   type: "error",
                                   title: row.testCaseName,
-                                  errorJson: row.errorJson,
+                                  rows: row.rowArtifacts.filter((x) =>
+                                    Boolean(x.errorJson),
+                                  ),
                                 })
                               }
                             >
-                              View Error JSON
+                              View Errors ({row.errorCount})
                             </button>
                           ) : (
                             <span style={styles.treeHint}>No error</span>
@@ -1770,19 +1788,63 @@ export default function ExecutionPage() {
             </div>
 
             {detailPreview.type === "screenshot" ? (
-              detailPreview.screenshotUrl ? (
-                <img
-                  src={detailPreview.screenshotUrl}
-                  alt={detailPreview.title}
-                  style={styles.previewImage}
-                />
+              detailPreview.rows.length > 0 ? (
+                <div style={styles.rowArtifactList}>
+                  {detailPreview.rows.map((r, idx) => (
+                    <div
+                      key={`${r.rowNumber}-${idx}`}
+                      style={styles.rowArtifactCard}
+                    >
+                      <div style={styles.rowArtifactTitle}>
+                        Row {r.rowNumber}
+                        {r.status ? (
+                          <span style={styles.rowArtifactMeta}>
+                            {" "}
+                            ({r.status})
+                          </span>
+                        ) : null}
+                      </div>
+                      {r.screenshotUrl ? (
+                        <img
+                          src={r.screenshotUrl}
+                          alt={`${detailPreview.title} row ${r.rowNumber}`}
+                          style={styles.previewImage}
+                        />
+                      ) : (
+                        <div style={styles.emptyState}>
+                          No screenshot available.
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
               ) : (
                 <div style={styles.emptyState}>No screenshot available.</div>
               )
+            ) : detailPreview.rows.length > 0 ? (
+              <div style={styles.rowArtifactList}>
+                {detailPreview.rows.map((r, idx) => (
+                  <div
+                    key={`${r.rowNumber}-${idx}`}
+                    style={styles.rowArtifactCard}
+                  >
+                    <div style={styles.rowArtifactTitle}>
+                      Row {r.rowNumber}
+                      {r.status ? (
+                        <span style={styles.rowArtifactMeta}>
+                          {" "}
+                          ({r.status})
+                        </span>
+                      ) : null}
+                    </div>
+                    <pre style={styles.jsonPreview}>
+                      {JSON.stringify(r.errorJson || {}, null, 2)}
+                    </pre>
+                  </div>
+                ))}
+              </div>
             ) : (
-              <pre style={styles.jsonPreview}>
-                {JSON.stringify(detailPreview.errorJson || {}, null, 2)}
-              </pre>
+              <div style={styles.emptyState}>No row errors available.</div>
             )}
           </div>
         </div>
