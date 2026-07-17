@@ -834,25 +834,29 @@ const RecordingDetailsTabs: React.FC<RecordingDetailsTabsProps> = ({
 
       {(activeTab === "steps" || activeTab === "selenium") && (
         <div style={styles.locatorBar}>
-          <span style={styles.locatorLabel}>Default Locator:</span>
-          {LOCATOR_OPTIONS.map((opt) => (
-            <button
-              key={opt.key}
-              type="button"
-              onClick={() => setLocatorPref(opt.key)}
-              style={{
-                ...styles.locatorChip,
-                ...(locatorPref === opt.key ? styles.locatorChipActive : {}),
-              }}
-            >
-              {opt.label}
-            </button>
-          ))}
+          {activeTab !== "selenium" && (
+            <>
+              <span style={styles.locatorLabel}>Default Locator:</span>
+              {LOCATOR_OPTIONS.map((opt) => (
+                <button
+                  key={opt.key}
+                  type="button"
+                  onClick={() => setLocatorPref(opt.key)}
+                  style={{
+                    ...styles.locatorChip,
+                    ...(locatorPref === opt.key
+                      ? styles.locatorChipActive
+                      : {}),
+                  }}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </>
+          )}
           {activeTab === "selenium" && (
             <>
-              <span style={{ ...styles.locatorLabel, marginLeft: 16 }}>
-                Language:
-              </span>
+              <span style={{ ...styles.locatorLabel }}>Language:</span>
               {LANGUAGE_OPTIONS.map((opt) => (
                 <button
                   key={opt.key}
@@ -1038,7 +1042,7 @@ const StepsTable: React.FC<{
                 <td style={styles.td}>
                   {value != null ? (
                     <span style={{ opacity: isFileStep ? 0.5 : 1 }}>
-                      {String(value)}
+                      {isFileStep ? `e.g: ${String(value)}` : String(value)}
                     </span>
                   ) : (
                     <span style={styles.muted}>-</span>

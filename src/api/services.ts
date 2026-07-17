@@ -131,6 +131,17 @@ export const testCaseService = {
     });
     return res.data.data;
   },
+  getSavedExcel: async (testCaseId: string) => {
+    const res = await api.get(`/testcases/${testCaseId}/excel-saved`, {
+      responseType: "blob",
+    });
+
+    const cd = res.headers?.["content-disposition"] || "";
+    const match = cd.match(/filename="([^"]+)"/i);
+    const fileName = match?.[1] || `${testCaseId}.xlsx`;
+
+    return { blob: res.data as Blob, fileName };
+  },
   generateFinalScript: async (
     testCaseId: string,
     payload: {

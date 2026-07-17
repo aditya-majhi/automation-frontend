@@ -12,6 +12,7 @@ const LoginPage = () => {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
 
   const getLoginErrorMessage = (err: unknown): string => {
     if (isAxiosError(err)) {
@@ -81,13 +82,26 @@ const LoginPage = () => {
             onChange={setEmail}
             placeholder="you@example.com"
           />
-          <FormInput
-            label="Password"
-            type="password"
-            value={password}
-            onChange={setPassword}
-            placeholder="••••••••"
-          />
+          <div style={styles.inputWrap}>
+            <label style={styles.label}>Password</label>
+            <div style={styles.passwordWrap}>
+              <input
+                type={showPassword ? "text" : "password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="••••••••"
+                style={styles.passwordInput}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((v) => !v)}
+                style={styles.eyeBtn}
+                title={showPassword ? "Hide password" : "Show password"}
+              >
+                {showPassword ? "🙈" : "👁"}
+              </button>
+            </div>
+          </div>
           <div style={styles.forgotRow}>
             <Link to="/forgot-password" style={styles.forgotLink}>
               Forgot password?
@@ -172,6 +186,40 @@ const styles: Record<string, React.CSSProperties> = {
   },
   anchor: {
     color: "#cba6f7",
+  },
+
+  inputWrap: {
+    marginBottom: "14px",
+  },
+  label: {
+    display: "block",
+    fontSize: "13px",
+    color: "#a6adc8",
+    marginBottom: "6px",
+  },
+  passwordWrap: {
+    position: "relative",
+  },
+  passwordInput: {
+    width: "100%",
+    padding: "10px 40px 10px 12px",
+    backgroundColor: "#313244",
+    border: "1px solid #45475a",
+    borderRadius: "8px",
+    color: "#cdd6f4",
+    fontSize: "14px",
+    boxSizing: "border-box",
+  },
+  eyeBtn: {
+    position: "absolute",
+    right: "10px",
+    top: "50%",
+    transform: "translateY(-50%)",
+    background: "transparent",
+    border: "none",
+    color: "#a6adc8",
+    cursor: "pointer",
+    fontSize: "16px",
   },
 };
 

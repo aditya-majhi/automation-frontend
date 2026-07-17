@@ -30,35 +30,46 @@ export const executionSlice = createSlice({
   name: "execution",
   initialState,
   reducers: {
-    // Set active execution (when user starts a batch)
     setActiveExecution: (state, action: PayloadAction<string>) => {
       state.activeExecutionId = action.payload;
       state.isPolling = true;
     },
 
-    // Update status data from polling
     setStatusData: (state, action: PayloadAction<any>) => {
       state.statusData = action.payload;
     },
 
-    // Update batch rows list
     setBatchRows: (state, action: PayloadAction<any[]>) => {
       state.batchRows = Array.isArray(action.payload) ? action.payload : [];
     },
 
-    // Update polling state
+    // Upsert single table row from /executions/:id status payload
+    upsertBatchRow: (state, action: PayloadAction<any>) => {
+      const incoming = action.payload;
+      const incomingId = String(incoming?.executionId || "").trim();
+      if (!incomingId) return;
+
+      const idx = state.batchRows.findIndex(
+        (r) => String(r?.executionId || "").trim() === incomingId,
+      );
+
+      if (idx >= 0) {
+        state.batchRows[idx] = { ...state.batchRows[idx], ...incoming };
+      } else {
+        state.batchRows.unshift(incoming);
+      }
+    },
+
     setIsPolling: (state, action: PayloadAction<boolean>) => {
       state.isPolling = action.payload;
     },
 
-    // Clear active execution (when polling stops)
     clearActiveExecution: (state) => {
       state.activeExecutionId = null;
       state.statusData = null;
       state.isPolling = false;
     },
 
-    // Batch modal actions
     openBatchModal: (state, action: PayloadAction<string>) => {
       state.isBatchModalOpen = true;
       state.activeBatchId = action.payload;
@@ -81,7 +92,6 @@ export const executionSlice = createSlice({
       }
     },
 
-    // Summary modal actions
     openSummaryModal: (
       state,
       action: PayloadAction<{ title: string; text: string }>,
@@ -97,7 +107,6 @@ export const executionSlice = createSlice({
       state.summaryModalText = "";
     },
 
-    // Restore from localStorage on app boot
     restoreFromStorage: (
       state,
       action: PayloadAction<Partial<ExecutionState>>,
@@ -111,6 +120,7 @@ export const {
   setActiveExecution,
   setStatusData,
   setBatchRows,
+  upsertBatchRow,
   setIsPolling,
   clearActiveExecution,
   openBatchModal,

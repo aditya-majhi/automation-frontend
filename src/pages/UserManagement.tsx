@@ -33,6 +33,7 @@ const UsersPage = () => {
   const [formPassword, setFormPassword] = useState("");
   const [formRoles, setFormRoles] = useState<string[]>([]);
   const [formIsActive, setFormIsActive] = useState(true);
+  const [showPassword, setShowPassword] = useState(false);
 
   useEffect(() => {
     fetchData();
@@ -63,6 +64,7 @@ const UsersPage = () => {
     setFormIsActive(true);
     setError("");
     setShowModal(true);
+    setShowPassword(false);
   };
 
   const openEditModal = (user: UserData) => {
@@ -74,6 +76,7 @@ const UsersPage = () => {
     setFormIsActive(user.isActive);
     setError("");
     setShowModal(true);
+    setShowPassword(false);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -132,9 +135,16 @@ const UsersPage = () => {
   };
 
   const toggleRole = (role: string) => {
-    setFormRoles((prev) =>
-      prev.includes(role) ? prev.filter((r) => r !== role) : [...prev, role],
-    );
+    setFormRoles((prev) => {
+      if (role === "ADMIN") {
+        return prev.includes("ADMIN") ? [] : ["ADMIN"];
+      }
+
+      const withoutAdmin = prev.filter((r) => r !== "ADMIN");
+      return withoutAdmin.includes(role)
+        ? withoutAdmin.filter((r) => r !== role)
+        : [...withoutAdmin, role];
+    });
   };
 
   const getRoleBadgeColor = (role: string) => {
@@ -158,6 +168,9 @@ const UsersPage = () => {
       </div>
     );
   }
+
+  //To check if ADMIN role is selected in the form
+  const isAdminSelected = formRoles.includes("ADMIN");
 
   return (
     <div style={commonStyles.container}>
@@ -389,19 +402,39 @@ const UsersPage = () => {
                   Password{" "}
                   {editingUser && (
                     <span style={{ color: colors.textMuted }}>
-                      {" "}
                       (leave blank to keep current)
                     </span>
                   )}
                 </label>
-                <input
-                  style={commonStyles.input}
-                  type="password"
-                  value={formPassword}
-                  onChange={(e) => setFormPassword(e.target.value)}
-                  placeholder={editingUser ? "••••••••" : "Min 6 characters"}
-                  required={!editingUser}
-                />
+
+                <div style={{ position: "relative" }}>
+                  <input
+                    style={{ ...commonStyles.input, paddingRight: "44px" }}
+                    type={showPassword ? "text" : "password"}
+                    value={formPassword}
+                    onChange={(e) => setFormPassword(e.target.value)}
+                    placeholder={editingUser ? "••••••••" : "Min 6 characters"}
+                    required={!editingUser}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((v) => !v)}
+                    style={{
+                      position: "absolute",
+                      right: 10,
+                      top: "50%",
+                      transform: "translateY(-50%)",
+                      border: "none",
+                      background: "transparent",
+                      color: colors.textDim,
+                      cursor: "pointer",
+                      fontSize: "16px",
+                    }}
+                    title={showPassword ? "Hide password" : "Show password"}
+                  >
+                    {showPassword ? "🙈" : "👁"}
+                  </button>
+                </div>
               </div>
 
               <div style={{ marginBottom: "14px" }}>
@@ -433,6 +466,7 @@ const UsersPage = () => {
                         type="checkbox"
                         checked={formRoles.includes(role.value)}
                         onChange={() => toggleRole(role.value)}
+                        disabled={isAdminSelected && role.value !== "ADMIN"}
                         style={{ accentColor: colors.primary }}
                       />
                       <div>

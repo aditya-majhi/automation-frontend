@@ -201,6 +201,10 @@ const RolesPage = () => {
                   const hasRole = user.roles.some((r) => r.role === role.value);
                   const isSaving = saving === user.id + role.value;
                   const c = getRoleBadgeColor(role.value);
+                  const userHasAdmin = user.roles.some(
+                    (r) => r.role === "ADMIN",
+                  );
+                  const disableToggle = userHasAdmin && role.value !== "ADMIN";
                   return (
                     <td
                       key={role.value}
@@ -210,7 +214,12 @@ const RolesPage = () => {
                         onClick={() =>
                           handleToggleRole(user.id, role.value, hasRole)
                         }
-                        disabled={isSaving}
+                        disabled={isSaving || disableToggle}
+                        title={
+                          disableToggle
+                            ? "User already has ADMIN role; other roles are blocked."
+                            : undefined
+                        }
                         style={{
                           width: "36px",
                           height: "36px",
@@ -219,11 +228,14 @@ const RolesPage = () => {
                           backgroundColor: hasRole ? c.bg : "transparent",
                           color: hasRole ? c.color : colors.textMuted,
                           fontSize: "16px",
-                          cursor: isSaving ? "wait" : "pointer",
+                          cursor:
+                            isSaving || disableToggle
+                              ? "not-allowed"
+                              : "pointer",
                           display: "inline-flex",
                           alignItems: "center",
                           justifyContent: "center",
-                          opacity: isSaving ? 0.5 : 1,
+                          opacity: isSaving || disableToggle ? 0.5 : 1,
                         }}
                       >
                         {isSaving ? "…" : hasRole ? "✓" : ""}

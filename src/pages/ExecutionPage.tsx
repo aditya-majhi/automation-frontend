@@ -15,9 +15,11 @@ import {
   setActiveBatchStatus,
   setActiveExecution,
   setBatchRows,
+  upsertBatchRow,
   setIsPolling,
   setStatusData,
 } from "../store/executionSlice";
+import * as XLSX from "xlsx";
 
 type Project = { id: string; name: string };
 type Module = { id: string; name: string; projectId?: string };
@@ -30,6 +32,12 @@ type TestCase = {
   lastExcelUploadedAt?: string | null;
   lastExcelName?: string | null;
   lastExcelSizeBytes?: number | null;
+};
+
+type ExcelPreview = {
+  headers: string[];
+  rows: Array<Record<string, string>>;
+  totalRows: number;
 };
 
 type CaseProgress = {
@@ -368,6 +376,20 @@ export default function ExecutionPage() {
   >({});
   const [rerunBusy, setRerunBusy] = useState(false);
 
+  //For Excel Preview
+  const [excelPreviewByTc, setExcelPreviewByTc] = useState<
+    Record<string, ExcelPreview>
+  >({});
+  const [savedExcelPreviewByTc, setSavedExcelPreviewByTc] = useState<
+    Record<string, ExcelPreview>
+  >({});
+  const [attemptedSavedPreviewByTc, setAttemptedSavedPreviewByTc] = useState<
+    Record<string, boolean>
+  >({});
+  const [expandedExcelPreviewByTc, setExpandedExcelPreviewByTc] = useState<
+    Record<string, boolean>
+  >({});
+
   //To check if the batch is running for button disable
   const isBatchRunning = (row: ExecutionBatchRow) => {
     const s = String(row.status || "").toLowerCase();
@@ -506,6 +528,35 @@ export default function ExecutionPage() {
     }
   };
 
+  const mapStatusToBatchRow = (raw: any): ExecutionBatchRow | null => {
+    const b = raw?.batch || {};
+    const executionId = String(b?.executionId || raw?.executionId || "").trim();
+    if (!executionId) return null;
+
+    return {
+      executionId,
+      batchNumber: String(b?.batchNumber || raw?.batchNumber || executionId),
+      version: Number(b?.version || raw?.version || 1),
+      submittedOn: String(
+        b?.submittedOn ||
+          raw?.executionDetails?.submittedOn ||
+          raw?.executionDetails?.requestedAt ||
+          "",
+      ),
+      submittedBy: String(b?.submittedBy || "-"),
+      aiSummary: String(
+        b?.aiSummary || raw?.result?.summary || raw?.summary || "",
+      ),
+      error: String(b?.error || raw?.error || ""),
+      status: String(raw?.status || b?.status || "queued"),
+      displayStatus: b?.displayStatus,
+      projectNames: Array.isArray(b?.projectNames) ? b.projectNames : [],
+      moduleNames: Array.isArray(b?.moduleNames) ? b.moduleNames : [],
+      selectedTestCaseCount: Number(b?.selectedTestCaseCount || 0),
+      totalTestCaseCount: Number(b?.totalTestCaseCount || 0),
+    };
+  };
+
   const refreshBatchRows = useCallback(async () => {
     const rows = await executionService.listExecutionJobs();
     dispatch(setBatchRows(Array.isArray(rows) ? rows : []));
@@ -547,33 +598,6 @@ export default function ExecutionPage() {
   }, [expandedProjectIds, modulesByProject]);
 
   useEffect(() => {
-    const refresh = () => {
-      refreshBatchRows().catch(() => {});
-    };
-
-    const onFocus = () => {
-      refresh();
-    };
-
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") refresh();
-    };
-
-    const timer = setInterval(() => {
-      if (document.visibilityState === "visible") refresh();
-    }, 5000);
-
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onVisibilityChange);
-
-    return () => {
-      clearInterval(timer);
-      window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-  }, [refreshBatchRows]);
-
-  useEffect(() => {
     const missingModuleIds = expandedModuleIds.filter(
       (moduleId) => !testCasesByModule[moduleId],
     );
@@ -613,6 +637,11 @@ export default function ExecutionPage() {
         const raw =
           await executionService.getExecutionStatus(activeExecutionId);
         dispatch(setStatusData(raw));
+
+        const rowFromStatus = mapStatusToBatchRow(raw);
+        if (rowFromStatus) {
+          dispatch(upsertBatchRow(rowFromStatus));
+        }
 
         const currentStatus = String(
           raw?.status || raw?.data?.status || "",
@@ -656,6 +685,11 @@ export default function ExecutionPage() {
           }),
         );
 
+        const rowFromLive = mapStatusToBatchRow(live);
+        if (rowFromLive) {
+          dispatch(upsertBatchRow(rowFromLive));
+        }
+
         const st = String(live?.status || "").toLowerCase();
         const terminal =
           st === "completed" || st === "failed" || st === "error";
@@ -669,7 +703,7 @@ export default function ExecutionPage() {
 
         if (!activeBatchStatus) {
           const row = (batchRows as ExecutionBatchRow[]).find(
-            (r) => r.batchNumber === activeBatchId,
+            (r) => r.executionId === activeBatchId,
           );
           if (row) {
             dispatch(
@@ -705,6 +739,27 @@ export default function ExecutionPage() {
     [allTestCases, selectedIds],
   );
 
+  useEffect(() => {
+    const toLoad = selectedCases.filter(
+      (tc) =>
+        tc.hasSavedExcel &&
+        !excelPreviewByTc[tc.id] &&
+        !savedExcelPreviewByTc[tc.id] &&
+        !attemptedSavedPreviewByTc[tc.id],
+    );
+
+    if (!toLoad.length) return;
+
+    toLoad.forEach((tc) => {
+      void loadSavedExcelPreview(tc.id);
+    });
+  }, [
+    selectedCases,
+    excelPreviewByTc,
+    savedExcelPreviewByTc,
+    attemptedSavedPreviewByTc,
+  ]);
+
   const uploadedCount = selectedCases.filter((tc) =>
     Boolean(filesByTc[tc.id]),
   ).length;
@@ -714,7 +769,32 @@ export default function ExecutionPage() {
 
   const removeFilesForTestCases = (testCaseIds: string[]) => {
     if (!testCaseIds.length) return;
+
     setFilesByTc((cur) => {
+      const next = { ...cur };
+      testCaseIds.forEach((id) => delete next[id]);
+      return next;
+    });
+
+    setExcelPreviewByTc((cur) => {
+      const next = { ...cur };
+      testCaseIds.forEach((id) => delete next[id]);
+      return next;
+    });
+
+    setExpandedExcelPreviewByTc((cur) => {
+      const next = { ...cur };
+      testCaseIds.forEach((id) => delete next[id]);
+      return next;
+    });
+
+    setSavedExcelPreviewByTc((cur) => {
+      const next = { ...cur };
+      testCaseIds.forEach((id) => delete next[id]);
+      return next;
+    });
+
+    setAttemptedSavedPreviewByTc((cur) => {
       const next = { ...cur };
       testCaseIds.forEach((id) => delete next[id]);
       return next;
@@ -905,12 +985,33 @@ export default function ExecutionPage() {
         ? prev.filter((v) => v !== testCaseId)
         : [...prev, testCaseId];
 
+      console.log({ exists });
+
       if (exists) {
         setFilesByTc((cur) => {
           const updated = { ...cur };
           delete updated[testCaseId];
           return updated;
         });
+
+        setExcelPreviewByTc((cur) => {
+          const updated = { ...cur };
+          delete updated[testCaseId];
+          return updated;
+        });
+
+        setExpandedExcelPreviewByTc((cur) => {
+          const updated = { ...cur };
+          delete updated[testCaseId];
+          return updated;
+        });
+      }
+
+      if (!exists) {
+        const tc = allTestCases.find((item) => item.id === testCaseId);
+        if (tc?.hasSavedExcel && !savedExcelPreviewByTc[testCaseId]) {
+          loadSavedExcelPreview(testCaseId);
+        }
       }
       return next;
     });
@@ -935,9 +1036,75 @@ export default function ExecutionPage() {
     }
   };
 
-  const onUpload = (testCaseId: string, file?: File) => {
+  //Helper for excel preview
+  const parseExcelBlobPreview = async (blob: Blob): Promise<ExcelPreview> => {
+    const buffer = await blob.arrayBuffer();
+    const workbook = XLSX.read(buffer, { type: "array" });
+    const firstSheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[firstSheetName];
+    const rawRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(sheet, {
+      defval: "",
+    });
+
+    const headers = rawRows.length > 0 ? Object.keys(rawRows[0]) : [];
+    const rows = rawRows.map((r) => {
+      const rowObj: Record<string, string> = {};
+      for (const k of headers) rowObj[k] = String(r[k] ?? "");
+      return rowObj;
+    });
+
+    return {
+      headers,
+      rows,
+      totalRows: rows.length,
+    };
+  };
+
+  const loadSavedExcelPreview = async (testCaseId: string) => {
+    try {
+      const res = await testCaseService.getSavedExcel(testCaseId);
+      const preview = await parseExcelBlobPreview(res.blob);
+
+      setSavedExcelPreviewByTc((prev) => ({
+        ...prev,
+        [testCaseId]: preview,
+      }));
+    } catch {
+      setSavedExcelPreviewByTc((prev) => {
+        const next = { ...prev };
+        delete next[testCaseId];
+        return next;
+      });
+    } finally {
+      setAttemptedSavedPreviewByTc((prev) => ({
+        ...prev,
+        [testCaseId]: true,
+      }));
+    }
+  };
+
+  const onUpload = async (testCaseId: string, file?: File) => {
     if (!file) return;
+
     setFilesByTc((prev) => ({ ...prev, [testCaseId]: file }));
+
+    try {
+      const preview = await parseExcelPreview(file);
+      setExcelPreviewByTc((prev) => ({ ...prev, [testCaseId]: preview }));
+      setExpandedExcelPreviewByTc((prev) => ({
+        ...prev,
+        [testCaseId]: false,
+      }));
+    } catch {
+      setExcelPreviewByTc((prev) => {
+        const next = { ...prev };
+        delete next[testCaseId];
+        return next;
+      });
+      setError(
+        "Uploaded file accepted, but Excel row preview could not be generated.",
+      );
+    }
   };
 
   const filesByTestCaseId = selectedCases.reduce<Record<string, File>>(
@@ -991,6 +1158,19 @@ export default function ExecutionPage() {
       "queued",
   ).toLowerCase();
   const topStatusColor = STATUS_COLORS[topStatus] || "#89dceb";
+
+  const activeBatchLabel = useMemo(() => {
+    const fromLive =
+      activeBatchStatus?.batch?.batchNumber || activeBatchStatus?.batchNumber;
+    if (fromLive) return String(fromLive);
+
+    const row = (batchRows as ExecutionBatchRow[]).find(
+      (r) => r.executionId === activeBatchId,
+    );
+    if (row?.batchNumber) return String(row.batchNumber);
+
+    return activeBatchId || "-";
+  }, [activeBatchStatus, batchRows, activeBatchId]);
 
   const resolvedStepCount =
     activeBatchStatus?.executionDetails?.stepCount ??
@@ -1292,6 +1472,140 @@ export default function ExecutionPage() {
         </div>
       )}
 
+      {templatesGenerated && selectedCases.length > 0 && (
+        <div style={styles.sectionCard}>
+          <div style={styles.sectionHeader}>
+            <h2 style={styles.sectionTitle}>Excel Preview</h2>
+            <span style={styles.countChip}>
+              {
+                selectedCases.filter((tc) =>
+                  Boolean(
+                    excelPreviewByTc[tc.id] || savedExcelPreviewByTc[tc.id],
+                  ),
+                ).length
+              }{" "}
+              preview(s)
+            </span>
+          </div>
+
+          {selectedCases.filter((tc) =>
+            Boolean(excelPreviewByTc[tc.id] || savedExcelPreviewByTc[tc.id]),
+          ).length === 0 ? (
+            <div style={styles.emptyState}>
+              Upload an Excel file or use the saved Excel to preview testcase
+              data.
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {selectedCases.map((tc) => {
+                const uploadedPreview = excelPreviewByTc[tc.id];
+                const savedPreview = savedExcelPreviewByTc[tc.id];
+                const preview = uploadedPreview || savedPreview;
+
+                if (!preview) return null;
+
+                const isUploaded = Boolean(uploadedPreview);
+                const isOpen = Boolean(expandedExcelPreviewByTc[tc.id]);
+
+                return (
+                  <div
+                    key={tc.id}
+                    style={{
+                      border: "1px solid #313244",
+                      borderRadius: 10,
+                      backgroundColor: "#11111b",
+                      overflow: "hidden",
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setExpandedExcelPreviewByTc((prev) => ({
+                          ...prev,
+                          [tc.id]: !isOpen,
+                        }))
+                      }
+                      style={{
+                        width: "100%",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        padding: "12px 14px",
+                        background: "transparent",
+                        border: "none",
+                        color: "#cdd6f4",
+                        fontWeight: 600,
+                        cursor: "pointer",
+                      }}
+                    >
+                      <span>
+                        {tc.name} {isUploaded ? "(Uploaded)" : "(Saved)"}
+                      </span>
+                      <span style={{ color: "#a6adc8", fontSize: 12 }}>
+                        {isOpen ? "Hide" : "Show"} ({preview.totalRows} rows)
+                      </span>
+                    </button>
+
+                    {isOpen && (
+                      <div style={{ padding: "0 14px 14px" }}>
+                        <div style={{ overflowX: "auto" }}>
+                          <table
+                            style={{
+                              width: "100%",
+                              borderCollapse: "collapse",
+                              fontSize: 12,
+                              border: "1px solid #313244",
+                            }}
+                          >
+                            <thead>
+                              <tr>
+                                {preview.headers.map((h) => (
+                                  <th
+                                    key={h}
+                                    style={{
+                                      textAlign: "left",
+                                      padding: "6px 8px",
+                                      borderBottom: "1px solid #313244",
+                                      color: "#cdd6f4",
+                                      whiteSpace: "nowrap",
+                                    }}
+                                  >
+                                    {h}
+                                  </th>
+                                ))}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {preview.rows.map((row, idx) => (
+                                <tr key={idx}>
+                                  {preview.headers.map((h) => (
+                                    <td
+                                      key={h}
+                                      style={{
+                                        padding: "6px 8px",
+                                        borderBottom: "1px solid #1e1e2e",
+                                        color: "#a6adc8",
+                                        whiteSpace: "nowrap",
+                                      }}
+                                    >
+                                      {row[h]}
+                                    </td>
+                                  ))}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
       <div style={styles.sectionCard}>
         <div style={styles.sectionHeader}>
           <h2 style={styles.sectionTitle}>Batch Executions</h2>
@@ -1479,7 +1793,7 @@ export default function ExecutionPage() {
         >
           <div style={styles.modalCard} onClick={(e) => e.stopPropagation()}>
             <div style={styles.modalHeader}>
-              <h3 style={styles.modalTitle}>Batch: {activeBatchId || "-"}</h3>
+              <h3 style={styles.modalTitle}>Batch: {activeBatchLabel}</h3>
 
               {/* {activeBatchStatus?._source && (
                 <span style={styles.countChip}>

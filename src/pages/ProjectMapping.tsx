@@ -37,10 +37,12 @@ const ProjectMappingPage = () => {
   >([]);
 
   //User and Project options for dropdowns
-  const userOptions: SelectOption[] = users.map((u) => ({
-    value: u.id,
-    label: `${u.name} (${u.email})`,
-  }));
+  const userOptions: SelectOption[] = users
+    .filter((u) => !u.roles.some((r) => r.role === "ADMIN"))
+    .map((u) => ({
+      value: u.id,
+      label: `${u.name} (${u.email})`,
+    }));
 
   const projectOptions: SelectOption[] = projects.map((p) => ({
     value: p.id,

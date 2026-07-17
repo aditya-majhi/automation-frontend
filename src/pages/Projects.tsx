@@ -116,8 +116,8 @@ const ProjectsPage = () => {
       setError("");
       await projectService.delete(project.id);
       await fetchProjects();
-    } catch {
-      setError("Failed to delete project");
+    } catch (err: any) {
+      setError(err?.response?.data?.message || "Failed to delete project");
     }
   };
 
