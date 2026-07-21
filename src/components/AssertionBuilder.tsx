@@ -15,6 +15,8 @@ type Row = {
   right_type: "constant" | "variable";
   right_constant: string;
   right_variable: string;
+  right_like_prefix: string;
+  right_like_suffix: string;
   regex_value: string;
   connector: "AND" | "OR";
 };
@@ -39,7 +41,17 @@ type AssertionsPanelProps = {
             left: string;
             operator: string;
             right_type: "constant" | "variable";
-            right_value: string | number | boolean | string[] | null;
+            right_value:
+              | string
+              | number
+              | boolean
+              | string[]
+              | {
+                  variable_name: string;
+                  prefix?: string;
+                  suffix?: string;
+                }
+              | null;
             regex_value: string | null;
           }>;
         };
@@ -57,6 +69,8 @@ const DEFAULT_OPERATORS = [
   "<=",
   "contains",
   "not_contains",
+  "like",
+  "unlike",
   "starts_with",
   "ends_with",
   "in_list",
@@ -72,6 +86,8 @@ const OPS_BY_DATATYPE: Record<string, string[]> = {
     "!=",
     "contains",
     "not_contains",
+    "like",
+    "unlike",
     "starts_with",
     "ends_with",
     "matches_regex",
@@ -83,19 +99,34 @@ const OPS_BY_DATATYPE: Record<string, string[]> = {
     "!=",
     "contains",
     "not_contains",
+    "like",
+    "unlike",
     "starts_with",
     "ends_with",
     "matches_regex",
     "is_empty",
     "is_not_empty",
   ],
-  number: ["==", "!=", ">", "<", ">=", "<=", "is_empty", "is_not_empty"],
+  number: [
+    "==",
+    "!=",
+    ">",
+    "<",
+    ">=",
+    "<=",
+    "like",
+    "unlike",
+    "is_empty",
+    "is_not_empty",
+  ],
   boolean: ["==", "!=", "is_empty", "is_not_empty"],
   email: [
     "==",
     "!=",
     "contains",
     "not_contains",
+    "like",
+    "unlike",
     "matches_regex",
     "is_empty",
     "is_not_empty",
@@ -106,6 +137,8 @@ const OPS_BY_DATATYPE: Record<string, string[]> = {
     "contains",
     "starts_with",
     "ends_with",
+    "like",
+    "unlike",
     "is_empty",
     "is_not_empty",
   ],
@@ -115,12 +148,47 @@ const OPS_BY_DATATYPE: Record<string, string[]> = {
     "contains",
     "starts_with",
     "ends_with",
+    "like",
+    "unlike",
     "is_empty",
     "is_not_empty",
   ],
-  date: ["==", "!=", ">", "<", ">=", "<=", "is_empty", "is_not_empty"],
-  datetime: ["==", "!=", ">", "<", ">=", "<=", "is_empty", "is_not_empty"],
-  time: ["==", "!=", ">", "<", ">=", "<=", "is_empty", "is_not_empty"],
+  date: [
+    "==",
+    "!=",
+    ">",
+    "<",
+    ">=",
+    "<=",
+    "like",
+    "unlike",
+    "is_empty",
+    "is_not_empty",
+  ],
+  datetime: [
+    "==",
+    "!=",
+    ">",
+    "<",
+    ">=",
+    "<=",
+    "like",
+    "unlike",
+    "is_empty",
+    "is_not_empty",
+  ],
+  time: [
+    "==",
+    "!=",
+    ">",
+    "<",
+    ">=",
+    "<=",
+    "like",
+    "unlike",
+    "is_empty",
+    "is_not_empty",
+  ],
   password: ["==", "!=", "is_empty", "is_not_empty"],
   color: ["==", "!=", "is_empty", "is_not_empty"],
   file: ["is_empty", "is_not_empty"],
@@ -148,6 +216,7 @@ const isRegexOperator = (op: string) => op === "matches_regex";
 const isNoRightOperator = (op: string) => NO_RIGHT_VALUE_OPERATORS.has(op);
 const isRightDisabledOperator = (op: string) =>
   isRegexOperator(op) || isNoRightOperator(op);
+const isLikeOperator = (op: string) => op === "like" || op === "unlike";
 
 const unwrap = <T,>(res: any, fallback: T): T => {
   if (res == null) return fallback;
@@ -188,6 +257,17 @@ const encodeVar = (name: string, pageName?: string | null) =>
 
 const decodeVarName = (encoded: string) => (encoded || "").split("__")[0] || "";
 
+const parseLikeComposite = (
+  raw: unknown,
+): { variable: string; suffix: string } => {
+  const txt = String(raw ?? "");
+  const [variable, suffix] = txt.split(":::");
+  return {
+    variable: String(variable || "").trim(),
+    suffix: String(suffix || "").trim(),
+  };
+};
+
 export default function AssertionsPanel({
   testCaseId,
   baseScript,
@@ -206,6 +286,8 @@ export default function AssertionsPanel({
       right_type: "constant",
       right_constant: "",
       right_variable: "",
+      right_like_suffix: "",
+      right_like_prefix: "",
       connector: "AND",
       regex_value: "",
     },
@@ -263,7 +345,10 @@ export default function AssertionsPanel({
           right_type: "constant",
           right_constant: "",
           right_variable: "",
+          right_like_suffix: "",
+          right_like_prefix: "",
           connector: "AND",
+          regex_value: "",
         },
       ];
     });
@@ -290,6 +375,9 @@ export default function AssertionsPanel({
       if (!r.left || !r.operator) return false;
       if (isRegexOperator(r.operator)) return r.regex_value.trim().length > 0;
       if (isNoRightOperator(r.operator)) return true;
+      if (isLikeOperator(r.operator) && r.right_type === "variable") {
+        return r.right_variable.trim().length > 0;
+      }
 
       return r.right_type === "constant"
         ? r.right_constant.trim().length > 0
@@ -338,7 +426,13 @@ export default function AssertionsPanel({
         right_type: r.right_type,
         right_value:
           r.right_type === "variable"
-            ? decodeVarName(r.right_variable)
+            ? isLikeOperator(r.operator)
+              ? {
+                  variable_name: decodeVarName(r.right_variable),
+                  prefix: r.right_like_prefix || "",
+                  suffix: r.right_like_suffix || "",
+                }
+              : decodeVarName(r.right_variable)
             : r.right_constant,
         regex_value: null,
       };
@@ -416,6 +510,8 @@ export default function AssertionsPanel({
                             right_type: "constant",
                             right_constant: "",
                             right_variable: "",
+                            right_like_suffix: "",
+                            right_like_prefix: "",
                             regex_value: "",
                           });
                         }}
@@ -447,6 +543,8 @@ export default function AssertionsPanel({
                               right_type: "constant",
                               right_constant: "",
                               right_variable: "",
+                              right_like_suffix: "",
+                              right_like_prefix: "",
                             });
                             return;
                           }
@@ -457,6 +555,8 @@ export default function AssertionsPanel({
                               regex_value: "",
                               right_constant: "",
                               right_variable: "",
+                              right_like_suffix: "",
+                              right_like_prefix: "",
                             });
                             return;
                           }
@@ -464,6 +564,8 @@ export default function AssertionsPanel({
                           updateRow(row.id, {
                             operator: nextOp,
                             regex_value: "",
+                            right_like_suffix: "",
+                            right_like_prefix: "",
                           });
                         }}
                         style={styles.inputSm}
@@ -484,6 +586,8 @@ export default function AssertionsPanel({
                               | "variable",
                             right_constant: "",
                             right_variable: "",
+                            right_like_suffix: "",
+                            right_like_prefix: "",
                           })
                         }
                         style={styles.inputSm}
@@ -517,6 +621,46 @@ export default function AssertionsPanel({
                           placeholder="No value required"
                           style={{ ...styles.input, ...styles.disabledInput }}
                         />
+                      ) : isLikeOperator(row.operator) &&
+                        row.right_type === "variable" ? (
+                        <div style={styles.likeCompositeWrap}>
+                          <input
+                            value={row.right_like_prefix}
+                            onChange={(e) =>
+                              updateRow(row.id, {
+                                right_like_prefix: e.target.value,
+                              })
+                            }
+                            placeholder="Type prefix"
+                            style={styles.input}
+                          />
+                          <select
+                            value={row.right_variable}
+                            onChange={(e) =>
+                              updateRow(row.id, {
+                                right_variable: e.target.value,
+                              })
+                            }
+                            style={styles.input}
+                          >
+                            <option value="">Select variable</option>
+                            {variableOptions.map((option) => (
+                              <option key={option.value} value={option.value}>
+                                {option.label}
+                              </option>
+                            ))}
+                          </select>
+                          <input
+                            value={row.right_like_suffix}
+                            onChange={(e) =>
+                              updateRow(row.id, {
+                                right_like_suffix: e.target.value,
+                              })
+                            }
+                            placeholder="Type suffix"
+                            style={styles.input}
+                          />
+                        </div>
                       ) : row.right_type === "constant" ? (
                         <input
                           value={row.right_constant}
@@ -804,5 +948,10 @@ const styles: Record<string, React.CSSProperties> = {
   disabledInput: {
     opacity: 0.6,
     cursor: "not-allowed",
+  },
+  likeCompositeWrap: {
+    display: "grid",
+    gridTemplateColumns: "1fr 1fr 1fr",
+    gap: 8,
   },
 };

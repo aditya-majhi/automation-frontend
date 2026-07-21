@@ -26,6 +26,7 @@ interface TestCaseMeta {
     project?: {
       id: string;
       name: string;
+      recordingUrl?: string | null;
     };
   };
 }
@@ -240,9 +241,24 @@ const TestCaseDetailPage = () => {
     baseScriptRef.current = baseScript;
   }, [baseScript]);
 
-  const handleStart = async (url: string) => {
+  const handleStart = async () => {
     if (!testCaseId) return;
-    const result = await startRecording(url, testCaseId);
+
+    const rawUrl = String(
+      testCaseMeta?.module?.project?.recordingUrl || "",
+    ).trim();
+    if (!rawUrl) {
+      throw new Error(
+        "Project URL is not configured. Please update the project and set a URL before recording.",
+      );
+    }
+
+    const formattedUrl =
+      rawUrl.startsWith("http://") || rawUrl.startsWith("https://")
+        ? rawUrl
+        : `https://${rawUrl}`;
+
+    const result = await startRecording(formattedUrl, testCaseId);
     if (!result.success) {
       throw new Error(result.error || "Failed to start recording");
     }
@@ -361,6 +377,9 @@ const TestCaseDetailPage = () => {
             onPythonScriptGenerated={handlePythonScriptGenerated}
             onTabChange={setActiveRecordingTab}
             onRuntimePathRequiredChange={setRuntimePathRequired}
+            projectRecordingUrl={
+              testCaseMeta?.module?.project?.recordingUrl || null
+            }
           />
         </CollapsibleSection>
       )}

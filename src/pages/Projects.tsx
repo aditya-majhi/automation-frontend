@@ -10,6 +10,7 @@ interface Project {
   id: string;
   name: string;
   description?: string;
+  recordingUrl?: string | null;
   createdAt: string;
   moduleCount?: number;
   testCaseCount?: number;
@@ -32,6 +33,7 @@ const ProjectsPage = () => {
   const [showModal, setShowModal] = useState(false);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [recordingUrl, setRecordingUrl] = useState("");
   const [error, setError] = useState("");
   const navigate = useNavigate();
 
@@ -39,6 +41,7 @@ const ProjectsPage = () => {
     setEditTarget(null);
     setName("");
     setDescription("");
+    setRecordingUrl("");
     setShowModal(true);
   };
 
@@ -46,6 +49,7 @@ const ProjectsPage = () => {
     setEditTarget(item);
     setName(item.name || "");
     setDescription(item.description || "");
+    setRecordingUrl(item.recordingUrl || "");
     setShowModal(true);
   };
 
@@ -71,9 +75,14 @@ const ProjectsPage = () => {
 
     try {
       setError("");
-      await projectService.create(name, description);
+      await projectService.create(
+        name.trim(),
+        description.trim() || undefined,
+        recordingUrl.trim() || undefined,
+      );
       setName("");
       setDescription("");
+      setRecordingUrl("");
       setShowModal(false);
       await fetchProjects();
     } catch (err: any) {
@@ -88,11 +97,13 @@ const ProjectsPage = () => {
       await projectService.update(editTarget.id, {
         name: name.trim(),
         description: description.trim() || null,
+        recordingUrl: recordingUrl.trim() || null,
       });
       setShowModal(false);
       setEditTarget(null);
       setName("");
       setDescription("");
+      setRecordingUrl("");
       await fetchProjects();
     } catch (err: any) {
       setError(err?.response?.data?.message || "Failed to update project");
@@ -128,7 +139,7 @@ const ProjectsPage = () => {
   return (
     <div style={styles.page}>
       <div style={styles.header}>
-        <h2 style={styles.title}>📁 Projects</h2>
+        <h2 style={styles.title}>Projects</h2>
         {canManageProjects && (
           <button style={styles.addBtn} onClick={openCreateModal}>
             + New Project
@@ -152,6 +163,7 @@ const ProjectsPage = () => {
             subtitle={[
               project.description ||
                 new Date(project.createdAt).toLocaleDateString(),
+              project.recordingUrl ? `URL: ${project.recordingUrl}` : null,
               project.creator?.name
                 ? `Created by ${project.creator.name}`
                 : null,
@@ -182,6 +194,12 @@ const ProjectsPage = () => {
             value={name}
             onChange={setName}
             placeholder="My Automation Project"
+          />
+          <FormInput
+            label="Project URL"
+            value={recordingUrl}
+            onChange={setRecordingUrl}
+            placeholder="https://example.com/login"
           />
           <FormInput
             label="Description (optional)"

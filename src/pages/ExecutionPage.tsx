@@ -1087,14 +1087,21 @@ export default function ExecutionPage() {
     if (!file) return;
 
     setFilesByTc((prev) => ({ ...prev, [testCaseId]: file }));
+    setTemplatesGenerated(true);
 
     try {
-      const preview = await parseExcelPreview(file);
+      const preview = await parseExcelBlobPreview(file);
       setExcelPreviewByTc((prev) => ({ ...prev, [testCaseId]: preview }));
       setExpandedExcelPreviewByTc((prev) => ({
         ...prev,
-        [testCaseId]: false,
+        [testCaseId]: true,
       }));
+
+      setSavedExcelPreviewByTc((prev) => {
+        const next = { ...prev };
+        delete next[testCaseId];
+        return next;
+      });
     } catch {
       setExcelPreviewByTc((prev) => {
         const next = { ...prev };
@@ -1549,52 +1556,68 @@ export default function ExecutionPage() {
                     {isOpen && (
                       <div style={{ padding: "0 14px 14px" }}>
                         <div style={{ overflowX: "auto" }}>
-                          <table
+                          <div
                             style={{
-                              width: "100%",
-                              borderCollapse: "collapse",
-                              fontSize: 12,
+                              maxHeight: preview.rows.length > 2 ? 110 : "none",
+                              overflowY:
+                                preview.rows.length > 2 ? "auto" : "visible",
                               border: "1px solid #313244",
+                              borderRadius: 8,
                             }}
                           >
-                            <thead>
-                              <tr>
-                                {preview.headers.map((h) => (
-                                  <th
-                                    key={h}
-                                    style={{
-                                      textAlign: "left",
-                                      padding: "6px 8px",
-                                      borderBottom: "1px solid #313244",
-                                      color: "#cdd6f4",
-                                      whiteSpace: "nowrap",
-                                    }}
-                                  >
-                                    {h}
-                                  </th>
-                                ))}
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {preview.rows.map((row, idx) => (
-                                <tr key={idx}>
+                            <table
+                              style={{
+                                width: "100%",
+                                borderCollapse: "collapse",
+                                fontSize: 12,
+                              }}
+                            >
+                              <thead
+                                style={{
+                                  position: "sticky",
+                                  top: 0,
+                                  backgroundColor: "#11111b",
+                                  zIndex: 1,
+                                }}
+                              >
+                                <tr>
                                   {preview.headers.map((h) => (
-                                    <td
+                                    <th
                                       key={h}
                                       style={{
+                                        textAlign: "left",
                                         padding: "6px 8px",
-                                        borderBottom: "1px solid #1e1e2e",
-                                        color: "#a6adc8",
+                                        borderBottom: "1px solid #313244",
+                                        color: "#cdd6f4",
                                         whiteSpace: "nowrap",
                                       }}
                                     >
-                                      {row[h]}
-                                    </td>
+                                      {h}
+                                    </th>
                                   ))}
                                 </tr>
-                              ))}
-                            </tbody>
-                          </table>
+                              </thead>
+                              <tbody>
+                                {preview.rows.map((row, idx) => (
+                                  <tr key={idx}>
+                                    {preview.headers.map((h) => (
+                                      <td
+                                        key={h}
+                                        style={{
+                                          padding: "6px 8px",
+                                          borderBottom: "1px solid #1e1e2e",
+                                          color: "#a6adc8",
+                                          whiteSpace: "nowrap",
+                                        }}
+                                      >
+                                        {row[h]}
+                                      </td>
+                                    ))}
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
                         </div>
                       </div>
                     )}

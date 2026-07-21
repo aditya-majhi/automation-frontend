@@ -43,13 +43,21 @@ export const projectService = {
     const res = await api.get("/projects");
     return res.data.data;
   },
-  create: async (name: string, description?: string) => {
-    const res = await api.post("/projects", { name, description });
+  create: async (name: string, description?: string, recordingUrl?: string) => {
+    const res = await api.post("/projects", {
+      name,
+      description,
+      recordingUrl,
+    });
     return res.data.data;
   },
   update: async (
     id: string,
-    payload: { name?: string; description?: string | null },
+    payload: {
+      name?: string;
+      description?: string | null;
+      recordingUrl?: string | null;
+    },
   ) => {
     const res = await api.patch(`/projects/${id}`, payload);
     return res.data.data;
@@ -153,7 +161,17 @@ export const testCaseService = {
           label: string;
           operator: string;
           right_type?: "constant" | "variable" | null;
-          right_value?: string | number | boolean | string[] | null;
+          right_value?:
+            | string
+            | number
+            | boolean
+            | string[]
+            | {
+                variable_name: string;
+                prefix?: string;
+                suffix?: string;
+              }
+            | null;
           regex_value?: string | null;
         }>;
         contextMeta?: any;
@@ -178,7 +196,17 @@ export const testCaseService = {
         label: string;
         operator: string;
         right_type?: "constant" | "variable" | null;
-        right_value?: string | number | boolean | string[] | null;
+        right_value?:
+          | string
+          | number
+          | boolean
+          | string[]
+          | {
+              variable_name: string;
+              prefix?: string;
+              suffix?: string;
+            }
+          | null;
         regex_value?: string | null;
       }>;
       contextMeta?: any;

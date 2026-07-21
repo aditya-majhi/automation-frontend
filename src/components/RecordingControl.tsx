@@ -1,12 +1,11 @@
 import { useState } from "react";
-import FormInput from "./FormInput";
 
 interface RecordingControlsProps {
   testCaseId: string;
   isRecording: boolean;
   stepCount: number;
   isExtensionInstalled: boolean;
-  onStart: (url: string) => Promise<void>;
+  onStart: () => Promise<void>;
   onStop: () => Promise<void>;
 }
 
@@ -18,25 +17,14 @@ const RecordingControls = ({
   onStart,
   onStop,
 }: RecordingControlsProps) => {
-  const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
   const handleStart = async () => {
-    if (!url.trim()) {
-      setError("Please enter a target URL");
-      return;
-    }
-
-    const formattedUrl =
-      url.startsWith("http://") || url.startsWith("https://")
-        ? url
-        : `https://${url}`;
-
     setError("");
     setLoading(true);
     try {
-      await onStart(formattedUrl);
+      await onStart();
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Failed to start recording",
@@ -60,11 +48,11 @@ const RecordingControls = ({
   return (
     <div style={styles.wrapper}>
       <div style={styles.header}>
-        <span style={styles.title}>🎥 Record Test Case</span>
+        <span style={styles.title}>Record Test Case</span>
         {isRecording && (
           <div style={styles.liveIndicator}>
             <span style={styles.dot} />
-            Recording — {stepCount} steps
+            Recording - {stepCount} steps
           </div>
         )}
       </div>
@@ -77,28 +65,18 @@ const RecordingControls = ({
       {error && <div style={styles.error}>{error}</div>}
 
       {!isRecording ? (
-        <div style={styles.row}>
-          <div style={styles.inputWrap}>
-            <FormInput
-              label="Target URL"
-              value={url}
-              onChange={setUrl}
-              placeholder="https://example.com/login"
-            />
-          </div>
-          <button
-            style={{
-              ...styles.startBtn,
-              opacity: !isExtensionInstalled || loading ? 0.5 : 1,
-              cursor:
-                !isExtensionInstalled || loading ? "not-allowed" : "pointer",
-            }}
-            onClick={handleStart}
-            disabled={!isExtensionInstalled || loading}
-          >
-            {loading ? "Starting..." : "▶ Start Recording"}
-          </button>
-        </div>
+        <button
+          style={{
+            ...styles.startBtn,
+            opacity: !isExtensionInstalled || loading ? 0.5 : 1,
+            cursor:
+              !isExtensionInstalled || loading ? "not-allowed" : "pointer",
+          }}
+          onClick={handleStart}
+          disabled={!isExtensionInstalled || loading}
+        >
+          {loading ? "Starting..." : "Start Recording"}
+        </button>
       ) : (
         <button
           style={{
@@ -108,7 +86,7 @@ const RecordingControls = ({
           onClick={handleStop}
           disabled={loading}
         >
-          {loading ? "Stopping..." : "⏹ Stop Recording"}
+          {loading ? "Stopping..." : "Stop Recording"}
         </button>
       )}
     </div>
@@ -178,15 +156,8 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: "13px",
     marginBottom: "14px",
   },
-  row: {
-    display: "flex",
-    gap: "12px",
-    alignItems: "flex-end",
-  },
-  inputWrap: {
-    flex: 1,
-  },
   startBtn: {
+    width: "100%",
     padding: "10px 20px",
     backgroundColor: "#a6e3a1",
     color: "#1e1e2e",
@@ -195,8 +166,6 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: "bold",
     fontSize: "13px",
     cursor: "pointer",
-    whiteSpace: "nowrap",
-    marginBottom: "14px",
   },
   stopBtn: {
     padding: "10px 24px",
